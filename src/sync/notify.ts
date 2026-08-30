@@ -3,7 +3,14 @@ import { CONFIG, type Env } from "../config";
 import * as repo from "../db/repo";
 import type { NotificationKind, TaskRow } from "../db/types";
 import { notificationBlocks } from "../slack/blocks";
-import { formatDue, isQuietHour, jst, jstDayOffset } from "../time";
+import {
+  formatDue,
+  formatDuration,
+  isQuietHour,
+  local,
+  localDayOffset,
+  startOfLocalWeek,
+} from "../time";
 
 /**
  * 通知ポリシー（§6）。
@@ -32,19 +39,19 @@ export async function runNotifications(
   now: number,
   newlyInserted: TaskRow[],
 ): Promise<number> {
-  if (isQuietHour(now, CONFIG.quietStartHourJst, CONFIG.quietEndHourJst)) return 0;
+  if (isQuietHour(now, CONFIG.quietStartHour, CONFIG.quietEndHour)) return 0;
 
   const db = env.DB;
   const active = await repo.listActiveTasks(db, CONFIG.maxTasksOnHome * 2);
-  const hourJst = jst(now).hour;
+  const hourJst = local(now).hour;
 
   const isSnoozed = (t: TaskRow) => t.snooze_until !== null && t.snooze_until > now;
 
   const dueTomorrow = active.filter(
     (t) =>
       t.due_at !== null &&
-      jstDayOffset(t.due_at, now) === 1 &&
-      hourJst >= CONFIG.dueTomorrowHourJst &&
+      localDayOffset(t.due_at, now) === 1 &&
+      hourJst >= CONFIG.dueTomorrowHour &&
       !isSnoozed(t),
   );
 
@@ -108,7 +115,7 @@ export async function sendDigest(
   const db = env.DB;
   const active = await repo.listActiveTasks(db, CONFIG.maxTasksOnHome);
   const soon = active.filter(
-    (t) => t.due_at !== null && jstDayOffset(t.due_at, now) <= 3,
+    (t) => t.due_at !== null && localDayOffset(t.due_at, now) <= 3,
   );
   if (soon.length === 0) return false;
 
@@ -153,4 +160,84 @@ function fallbackText(kind: NotificationKind, tasks: TaskRow[], now: number): st
   return tasks.length > 1
     ? `${head}: ${first.title}${due} ほか ${tasks.length - 1} 件`
     : `${head}: ${first.title}${due}`;
+}
+
+
+/**
+ * 週次サマリ（日曜 21:00）。
+ *
+ * 外部のダッシュボードは「見に行く」必要があるため続かない。
+ * 同じ内容を週に 1 度だけ Slack に届けるほうが実際に目に入る、という判断で
+ * 時間管理の出力先をここに置いている。
+ *
+ * cron は無料枠 3 本を使い切っているので、15 分ごとの同期に相乗りさせ、
+ * 送信済みかどうかは kv_state で管理する（発火を取りこぼしても次の tick で送る）。
+ */
+export async function maybeSendWeeklySummary(
+  env: Env,
+  client: SlackAPIClient,
+  now: number,
+): Promise<boolean> {
+  const db = env.DB;
+  const weekStart = startOfLocalWeek(now);
+  // 週の始まりは月曜。そこから目的の曜日・時刻を出す（日曜 = 月曜 +6 日）。
+  const weekdayOffset = (CONFIG.weeklySummaryWeekday + 6) % 7;
+  const target = weekStart + weekdayOffset * 86400 + CONFIG.weeklySummaryHour * 3600;
+
+  if (now < target) return false;
+  const last = await repo.getStateNumber(db, "last_weekly_summary_at");
+  if (last !== null && last >= target) return false;
+
+  const [byCourse, completed, active] = await Promise.all([
+    repo.trackedByCourse(db, weekStart, now),
+    repo.completedBetween(db, weekStart, now),
+    repo.listActiveTasks(db, CONFIG.maxTasksOnHome),
+  ]);
+
+  const totalSec = byCourse.reduce((a, c) => a + (c.sec ?? 0), 0);
+  const nextWeek = active.filter(
+    (t) => t.due_at !== null && t.due_at > now && localDayOffset(t.due_at, now) <= 7,
+  );
+
+  // 何も無い週に空の報告を送らない（§6 送らないもの）
+  if (totalSec === 0 && completed.length === 0 && nextWeek.length === 0) {
+    await repo.setState(db, "last_weekly_summary_at", String(now));
+    return false;
+  }
+
+  const lines: string[] = [`*今週のふりかえり*　学習 \`${formatDuration(totalSec)}\``];
+
+  if (byCourse.length > 0) {
+    lines.push("");
+    const max = Math.max(...byCourse.map((c) => c.sec ?? 0));
+    for (const c of byCourse) {
+      const sec = c.sec ?? 0;
+      // 文字だけで割合が分かるように簡易バーを引く
+      const bar = "▇".repeat(Math.max(1, Math.round((sec / max) * 12)));
+      lines.push(`${bar} \`${formatDuration(sec)}\`　${c.course ?? "科目なし"}`);
+    }
+  }
+
+  if (completed.length > 0) {
+    lines.push("", `*完了 ${completed.length} 件*`);
+    for (const t of completed.slice(0, 8)) {
+      lines.push(`• ~${t.title}~`);
+    }
+  }
+
+  if (nextWeek.length > 0) {
+    lines.push("", `*来週の締切 ${nextWeek.length} 件*`);
+    for (const t of nextWeek.slice(0, 8)) {
+      lines.push(`• ${formatDue(t.due_at!, now)}　${t.course_name ? `${t.course_name} / ` : ""}${t.title}`);
+    }
+  }
+
+  await client.chat.postMessage({
+    channel: resolveChannel(env),
+    text: `今週の学習 ${formatDuration(totalSec)} / 完了 ${completed.length} 件`,
+    blocks: [{ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } }],
+  });
+
+  await repo.setState(db, "last_weekly_summary_at", String(now));
+  return true;
 }

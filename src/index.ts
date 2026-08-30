@@ -1,13 +1,24 @@
 import { SlackAPIClient } from "slack-cloudflare-workers";
-import { assertEnv, isTogglConfigured, missingConfig, type Env } from "./config";
+import {
+  assertEnv,
+  isTogglConfigured,
+  missingConfig,
+  resolveTimezoneOffsetMin,
+  type Env,
+} from "./config";
 import * as repo from "./db/repo";
 import { MoodleAuthError, createMoodleClient } from "./moodle";
-import { runNotifications, sendDigest, notifyTokenExpired } from "./sync/notify";
+import {
+  maybeSendWeeklySummary,
+  notifyTokenExpired,
+  runNotifications,
+  sendDigest,
+} from "./sync/notify";
 import { syncMoodle, syncSubmissions } from "./sync/reconcile";
 import { createSlackApp } from "./slack/app";
 import { publishHome } from "./slack/home";
 import { reconcileRunningEntry } from "./toggl/tracking";
-import { nowSec } from "./time";
+import { nowSec, setTimezoneOffsetMin } from "./time";
 
 /** wrangler.toml の crons と 1 対 1 で対応させる。 */
 const CRON = {
@@ -18,6 +29,7 @@ const CRON = {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    setTimezoneOffsetMin(resolveTimezoneOffsetMin(env));
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
@@ -47,6 +59,7 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    setTimezoneOffsetMin(resolveTimezoneOffsetMin(env));
     assertEnv(env);
     const now = nowSec();
     const client = new SlackAPIClient(env.SLACK_BOT_TOKEN);
@@ -75,6 +88,7 @@ async function runSync(env: Env, client: SlackAPIClient, now: number): Promise<v
     const outcome = await syncMoodle(env.DB, moodle, now);
     await syncSubmissions(env.DB, moodle, now);
     await runNotifications(env, client, now, outcome.inserted);
+    await maybeSendWeeklySummary(env, client, now);
     await publishHome(env, client, now);
   } catch (e) {
     if (e instanceof MoodleAuthError) {

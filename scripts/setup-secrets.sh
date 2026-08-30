@@ -48,4 +48,4 @@ echo
 echo "登録済みのシークレット:"
 npx wrangler secret list 2>/dev/null | grep -oE '"name": "[^"]+"' | sed 's/"name": /  /;s/"//g'
 echo
-echo "確認: curl https://moodle-slack-toggl-bot.<あなた>.workers.dev/health"
+echo "確認: デプロイ時に表示された URL の /health を開いて \"missing\": [] を確認してください"

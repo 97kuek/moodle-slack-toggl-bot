@@ -1,51 +1,84 @@
 /**
  * 時刻ユーティリティ。
- * 保存はすべて unix 秒 / UTC。表示と「何時か」の判定だけ JST に変換する。
- * Cloudflare の Cron Trigger も UTC なので、JST が出てくるのはここだけに閉じ込める。
+ *
+ * 保存はすべて unix 秒 / UTC。表示と「何時か」の判定だけ表示タイムゾーンに変換する。
+ * Cloudflare の Cron Trigger も UTC なので、ローカル時刻が出てくるのはこのファイルだけ。
+ *
+ * オフセットはモジュールに 1 度だけ設定する。1 人 1 デプロイの構成で
+ * タイムゾーンはデプロイ単位の定数なので、呼び出し全体に引数を通すより
+ * ここで持つほうが素直。エントリポイントの先頭で setTimezoneOffsetMin() を呼ぶ。
  */
 
-export const JST_OFFSET_SEC = 9 * 60 * 60;
+/** 日本標準時。設定が無ければこれを使う。 */
+export const DEFAULT_TZ_OFFSET_MIN = 540;
+
 const DAY = 24 * 60 * 60;
+
+let tzOffsetSec = DEFAULT_TZ_OFFSET_MIN * 60;
+
+export function setTimezoneOffsetMin(minutes: number): void {
+  tzOffsetSec = Math.round(minutes) * 60;
+}
+
+export function timezoneOffsetMin(): number {
+  return tzOffsetSec / 60;
+}
 
 export function nowSec(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-export interface JstParts {
+export interface LocalParts {
   year: number;
   month: number;
   day: number;
   hour: number;
   minute: number;
-  /** JST におけるその日の 00:00 の unix 秒 */
+  /** 表示タイムゾーンにおけるその日の 00:00 の unix 秒 */
   startOfDay: number;
 }
 
-export function jst(epochSec: number): JstParts {
-  const shifted = new Date((epochSec + JST_OFFSET_SEC) * 1000);
+export function local(epochSec: number): LocalParts {
+  const shifted = new Date((epochSec + tzOffsetSec) * 1000);
   const year = shifted.getUTCFullYear();
   const month = shifted.getUTCMonth() + 1;
   const day = shifted.getUTCDate();
   const hour = shifted.getUTCHours();
   const minute = shifted.getUTCMinutes();
   const startOfDay =
-    Math.floor((epochSec + JST_OFFSET_SEC) / DAY) * DAY - JST_OFFSET_SEC;
+    Math.floor((epochSec + tzOffsetSec) / DAY) * DAY - tzOffsetSec;
   return { year, month, day, hour, minute, startOfDay };
 }
 
-/** JST の「今日」の 00:00（unix 秒）。 */
-export function startOfJstDay(epochSec: number): number {
-  return jst(epochSec).startOfDay;
+/**
+ * JST の「今週」の始まり（月曜 00:00）の unix 秒。
+ * 週次サマリの集計範囲を出すのに使う。
+ */
+export function startOfLocalWeek(epochSec: number): number {
+  const shifted = new Date((epochSec + tzOffsetSec) * 1000);
+  // getUTCDay(): 0=日曜 … 6=土曜。月曜始まりにするため 1 を基準にずらす。
+  const daysSinceMonday = (shifted.getUTCDay() + 6) % 7;
+  return startOfLocalDay(epochSec) - daysSinceMonday * DAY;
 }
 
-/** epoch が JST でいう今日から何日後か（今日=0, 明日=1）。 */
-export function jstDayOffset(epochSec: number, now: number): number {
-  return Math.round((startOfJstDay(epochSec) - startOfJstDay(now)) / DAY);
+/** 表示タイムゾーンでの曜日（0=日曜 … 6=土曜）。 */
+export function localWeekday(epochSec: number): number {
+  return new Date((epochSec + tzOffsetSec) * 1000).getUTCDay();
 }
 
-/** 静音時間（JST 0:00–7:00）かどうか。 */
+/** 表示タイムゾーンでの「今日」の 00:00（unix 秒）。 */
+export function startOfLocalDay(epochSec: number): number {
+  return local(epochSec).startOfDay;
+}
+
+/** epoch が表示タイムゾーンでの今日から何日後か（今日=0, 明日=1）。 */
+export function localDayOffset(epochSec: number, now: number): number {
+  return Math.round((startOfLocalDay(epochSec) - startOfLocalDay(now)) / DAY);
+}
+
+/** 静音時間かどうか。 */
 export function isQuietHour(epochSec: number, startHour: number, endHour: number): boolean {
-  const h = jst(epochSec).hour;
+  const h = local(epochSec).hour;
   return h >= startHour && h < endHour;
 }
 
@@ -53,8 +86,8 @@ const pad = (n: number) => String(n).padStart(2, "0");
 
 /** "9/2 17:00"。今日なら "17:00" だけにする。 */
 export function formatDue(epochSec: number, now: number): string {
-  const d = jst(epochSec);
-  const offset = jstDayOffset(epochSec, now);
+  const d = local(epochSec);
+  const offset = localDayOffset(epochSec, now);
   const time = `${pad(d.hour)}:${pad(d.minute)}`;
   if (offset === 0) return time;
   return `${d.month}/${d.day} ${time}`;
@@ -80,7 +113,7 @@ export function formatRemaining(dueAt: number, now: number): string {
 /** 見出し用のグループ名。 */
 export function dueGroupLabel(dueAt: number | null, now: number): string {
   if (dueAt === null) return "期限なし";
-  const offset = jstDayOffset(dueAt, now);
+  const offset = localDayOffset(dueAt, now);
   if (offset < 0) return "期限超過";
   if (offset === 0) return "今日締切";
   if (offset === 1) return "明日";

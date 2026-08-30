@@ -18,7 +18,8 @@ export function newId(): string {
 }
 
 const TASK_COLUMNS = `id, source, source_id, course_id, course_name, title, kind, url,
-  instance_id, due_at, submitted_at, status, snooze_until, tracked_sec, first_seen_at, last_seen_at`;
+  instance_id, due_at, submitted_at, status, snooze_until, tracked_sec, completed_at,
+  first_seen_at, last_seen_at`;
 
 // ---------------------------------------------------------------- tasks
 
@@ -55,7 +56,7 @@ export function insertTaskStmt(db: D1Database, task: TaskRow): D1PreparedStateme
   return db
     .prepare(
       `INSERT INTO tasks (${TASK_COLUMNS})
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)`,
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)`,
     )
     .bind(
       task.id,
@@ -72,6 +73,7 @@ export function insertTaskStmt(db: D1Database, task: TaskRow): D1PreparedStateme
       task.status,
       task.snooze_until,
       task.tracked_sec,
+      task.completed_at,
       task.first_seen_at,
       task.last_seen_at,
     );
@@ -111,8 +113,19 @@ export async function setStatus(db: D1Database, id: string, status: TaskStatus):
 
 export function markSubmittedStmt(db: D1Database, id: string, submittedAt: number): D1PreparedStatement {
   return db
-    .prepare(`UPDATE tasks SET status = 'done', submitted_at = ?2 WHERE id = ?1 AND status <> 'done'`)
+    .prepare(
+      `UPDATE tasks SET status = 'done', submitted_at = ?2, completed_at = COALESCE(completed_at, ?2)
+       WHERE id = ?1 AND status <> 'done'`,
+    )
     .bind(id, submittedAt);
+}
+
+/** 手動の「完了」。いつ終わらせたかを残して週次サマリの集計に使う。 */
+export async function markDone(db: D1Database, id: string, at: number): Promise<void> {
+  await db
+    .prepare(`UPDATE tasks SET status = 'done', completed_at = COALESCE(completed_at, ?2) WHERE id = ?1`)
+    .bind(id, at)
+    .run();
 }
 
 export async function snoozeTask(db: D1Database, id: string, until: number): Promise<void> {
@@ -260,6 +273,47 @@ export async function trackedSecSince(db: D1Database, since: number): Promise<nu
     .bind(since)
     .first<{ total: number }>();
   return row?.total ?? 0;
+}
+
+export interface CourseTotal {
+  course: string | null;
+  sec: number;
+  sessions: number;
+}
+
+/** 期間内の学習時間を科目別に集計する（週次サマリ用）。 */
+export async function trackedByCourse(
+  db: D1Database,
+  from: number,
+  to: number,
+): Promise<CourseTotal[]> {
+  const res = await db
+    .prepare(
+      `SELECT t.course_name AS course, SUM(s.duration_sec) AS sec, COUNT(*) AS sessions
+       FROM time_sessions s JOIN tasks t ON t.id = s.task_id
+       WHERE s.stopped_at IS NOT NULL AND s.started_at >= ?1 AND s.started_at < ?2
+       GROUP BY t.course_name ORDER BY sec DESC`,
+    )
+    .bind(from, to)
+    .all<CourseTotal>();
+  return res.results ?? [];
+}
+
+/** 期間内に完了したタスク。 */
+export async function completedBetween(
+  db: D1Database,
+  from: number,
+  to: number,
+): Promise<TaskRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT ${TASK_COLUMNS} FROM tasks
+       WHERE completed_at IS NOT NULL AND completed_at >= ?1 AND completed_at < ?2
+       ORDER BY completed_at ASC`,
+    )
+    .bind(from, to)
+    .all<TaskRow>();
+  return res.results ?? [];
 }
 
 // ---------------------------------------------------- course_project_map

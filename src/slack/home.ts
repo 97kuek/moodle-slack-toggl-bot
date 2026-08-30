@@ -1,7 +1,7 @@
 import type { SlackAPIClient } from "slack-cloudflare-workers";
 import { CONFIG, type Env } from "../config";
 import * as repo from "../db/repo";
-import { startOfJstDay } from "../time";
+import { startOfLocalDay } from "../time";
 import { homeView } from "./blocks";
 
 /** App Home を描き直す。TODO の主役はここ（§7）。 */
@@ -15,7 +15,7 @@ export async function publishHome(
   const [tasks, running, todayTrackedSec, lastSyncAt] = await Promise.all([
     repo.listActiveTasks(db, CONFIG.maxTasksOnHome),
     repo.getRunningSession(db),
-    repo.trackedSecSince(db, startOfJstDay(now)),
+    repo.trackedSecSince(db, startOfLocalDay(now)),
     repo.getStateNumber(db, "last_sync_at"),
   ]);
 

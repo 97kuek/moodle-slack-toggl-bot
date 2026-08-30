@@ -4,7 +4,7 @@ import * as repo from "../db/repo";
 import { createMoodleClient } from "../moodle";
 import { syncMoodle } from "../sync/reconcile";
 import { startTracking, stopTracking } from "../toggl/tracking";
-import { nowSec, startOfJstDay } from "../time";
+import { nowSec, startOfLocalDay } from "../time";
 import { ACTION } from "./blocks";
 import { publishHome } from "./home";
 
@@ -52,7 +52,7 @@ export function createSlackApp(env: Env): SlackApp<Env> {
       if (!taskId) return;
       const running = await repo.getRunningSession(env.DB);
       if (running?.task_id === taskId) await stopTracking(env);
-      await repo.setStatus(env.DB, taskId, "done");
+      await repo.markDone(env.DB, taskId, nowSec());
       await publishHome(env, context.client, nowSec());
     },
   );
@@ -96,5 +96,5 @@ function buttonValue(payload: { actions?: { value?: string }[] }): string | null
 
 /** 「😴 明日」= 翌日 9:00 JST まで黙る。 */
 export function snoozeUntilTomorrowMorning(now: number): number {
-  return startOfJstDay(now) + 24 * 60 * 60 + 9 * 60 * 60;
+  return startOfLocalDay(now) + 24 * 60 * 60 + 9 * 60 * 60;
 }

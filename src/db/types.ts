@@ -17,6 +17,7 @@ export interface TaskRow {
   status: TaskStatus;
   snooze_until: number | null;
   tracked_sec: number;
+  completed_at: number | null;
   first_seen_at: number;
   last_seen_at: number;
 }

@@ -174,6 +174,7 @@ function toTaskRow(item: RawMoodleTask, source: string, now: number): TaskRow {
     status: "open",
     snooze_until: null,
     tracked_sec: 0,
+    completed_at: null,
     first_seen_at: now,
     last_seen_at: now,
   };

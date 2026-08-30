@@ -144,7 +144,8 @@ curl -s "https://<moodle>/webservice/rest/server.php" \
 
 ## 4. データモデル（D1）
 
-すべての時刻は **unix 秒 / UTC** で保存。表示と判定のみ JST に変換する。
+すべての時刻は **unix 秒 / UTC** で保存。表示と判定のみ表示タイムゾーンに変換する。
+オフセットは `TIMEZONE_OFFSET_MIN` で設定でき、`src/time.ts` の外にローカル時刻を漏らさない。
 
 ```sql
 CREATE TABLE tasks (
@@ -242,7 +243,8 @@ CREATE TABLE kv_state (key TEXT PRIMARY KEY, value TEXT);  -- last_sync_at 等
 | `new` | 検出直後 | 新しい課題が出た |
 | `due_tomorrow` | 前日 21:00 JST | 明日締切 |
 | `due_3h` | 締切3時間前 | 最終警告。これだけ強めの表現 |
-| ダイジェスト | 毎朝 7:00 JST | 今日〜3日以内の一覧 + App Home へのリンク |
+| ダイジェスト | 毎朝 7:00 | 今日〜3日以内の一覧 + App Home へのリンク |
+| 週次サマリ | 毎週日曜 21:00 | 科目別の学習時間、今週完了した課題、来週の締切 |
 
 1課題あたり DM は **最大3通**。当初案の「3日前」通知は朝ダイジェストと役割が重複するため削除した。
 
@@ -255,6 +257,15 @@ CREATE TABLE kv_state (key TEXT PRIMARY KEY, value TEXT);  -- last_sync_at 等
 - **冪等性**: `notifications(task_id, kind)` の PRIMARY KEY で二重送信を防ぐ。
   手順は「`INSERT OR IGNORE` → 挿入できた場合のみ送信 → 送信失敗なら行を削除」。
   これで重複送信を確実に防ぎ、失敗時は次回 cron で再試行される。
+
+### 6.4 週次サマリを Slack に出す理由
+
+時間計測の集計は Toggl のダッシュボードでも見られるが、**外部の画面は「見に行く」必要があるため続かない**。
+同じ内容を週に 1 度だけ Slack に届けるほうが実際に目に入る。
+
+cron は無料枠 3 本を使い切っているため、15 分ごとの同期に相乗りさせ、
+送信済みかどうかは `kv_state` で管理する。発火を取りこぼしても次の tick で送られ、
+二重送信もしない。学習時間も完了も締切も無い週は送らない。
 
 ### 6.3 送らないもの
 
@@ -311,6 +322,11 @@ App Home タブを常設の TODO リストとして使う。
 ## 8. Toggl 連携
 
 Toggl Track API v9。認証は API トークンの Basic 認証（`<token>:api_token`）。
+
+**Toggl は任意。** 時間データの正は常にローカルの `time_sessions` で、Toggl はその鏡。
+トークン未設定でも Moodle の同期・通知・TODO はそのまま動き、計測ボタンだけが
+「未設定です」と返す。この構造にしてあるので、Toggl を使うか自前で完結させるかは
+後からいつでも変えられる。
 
 ### 8.1 操作の流れ
 

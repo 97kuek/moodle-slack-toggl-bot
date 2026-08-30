@@ -6,21 +6,48 @@
  * ネットワークにも Slack にも触れず、認証情報も読まない。
  * 大学ごとに違う Moodle の書式に合わせ込むときはこれで確かめる。
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { parseIcs } from "../src/moodle/ical";
-import { dueGroupLabel, formatDue, formatRemaining } from "../src/time";
+import {
+  dueGroupLabel,
+  formatDue,
+  formatRemaining,
+  setTimezoneOffsetMin,
+} from "../src/time";
 
 const path = process.argv[2];
 if (!path) {
   console.error("使い方: npm run parse:ics -- <path/to/moodle.ics> [moodle-base-url]");
   process.exit(1);
 }
-const baseUrl = process.argv[3] ?? "https://wsdmoodle.waseda.jp";
+/** リンクのフォールバック生成に使うだけなので、無くても解析はできる。 */
+function resolveBaseUrl(): string {
+  const fromArg = process.argv[3];
+  if (fromArg) return fromArg;
+  for (const f of ["wrangler.toml", "wrangler.toml.example"]) {
+    if (!existsSync(f)) continue;
+    const m = /^MOODLE_BASE_URL\s*=\s*"([^"]+)"/m.exec(readFileSync(f, "utf-8"));
+    if (m?.[1]) return m[1];
+  }
+  return "";
+}
+const baseUrl = resolveBaseUrl();
 
-const tasks = parseIcs(readFileSync(path, "utf-8"), baseUrl, 540);
+function resolveTzOffsetMin(): number {
+  for (const f of ["wrangler.toml", "wrangler.toml.example"]) {
+    if (!existsSync(f)) continue;
+    const m = /^TIMEZONE_OFFSET_MIN\s*=\s*"(-?\d+)"/m.exec(readFileSync(f, "utf-8"));
+    if (m?.[1]) return Number(m[1]);
+  }
+  return 540;
+}
+const tzOffsetMin = resolveTzOffsetMin();
+setTimezoneOffsetMin(tzOffsetMin);
+
+const tasks = parseIcs(readFileSync(path, "utf-8"), baseUrl, tzOffsetMin);
 const now = Math.floor(Date.now() / 1000);
 
-console.log(`\n取り込めたイベント: ${tasks.length} 件\n`);
+console.log(`\n取り込めたイベント: ${tasks.length} 件 (UTC${tzOffsetMin >= 0 ? "+" : ""}${tzOffsetMin / 60} で表示)\n`);
 
 const kinds = new Map<string, number>();
 let noDue = 0;

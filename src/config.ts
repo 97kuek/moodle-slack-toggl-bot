@@ -1,4 +1,5 @@
 import type { SlackEdgeAppEnv } from "slack-cloudflare-workers";
+import { DEFAULT_TZ_OFFSET_MIN } from "./time";
 
 /** wrangler.toml の [vars] と wrangler secret で注入される値。 */
 export type Env = SlackEdgeAppEnv & {
@@ -9,7 +10,8 @@ export type Env = SlackEdgeAppEnv & {
   MOODLE_MODE: "ws" | "ical";
   MOODLE_TOKEN?: string;
   MOODLE_ICAL_URL?: string;
-  MOODLE_ICAL_FALLBACK_TZ_OFFSET_MIN?: string;
+  /** 表示・判定に使うタイムゾーンの UTC からのオフセット（分）。既定は 540（JST） */
+  TIMEZONE_OFFSET_MIN?: string;
 
   // Slack
   SLACK_BOT_TOKEN: string;
@@ -43,11 +45,15 @@ export const CONFIG = {
   /** この時間以上計測したタスクに「着手済み」を出す */
   startedThresholdSec: 20 * 60,
 
-  /** 静音時間（JST）。この間は送信せず朝のダイジェストに合流させる */
-  quietStartHourJst: 0,
-  quietEndHourJst: 7,
-  /** 「明日締切」を送る時刻（JST） */
-  dueTomorrowHourJst: 21,
+  /** 静音時間。この間は送信せず朝のダイジェストに合流させる */
+  quietStartHour: 0,
+  quietEndHour: 7,
+  /** 「明日締切」を送る時刻 */
+  dueTomorrowHour: 21,
+
+  /** 週次サマリを送る曜日（0=日曜）と時刻 */
+  weeklySummaryWeekday: 0,
+  weeklySummaryHour: 21,
 
   /** App Home に出すタスクの上限（Block Kit のブロック数制限対策） */
   maxTasksOnHome: 25,
@@ -59,6 +65,12 @@ export const SOURCE_BY_MODE = {
 } as const;
 
 /** 未設定の必須項目を返す。/health の自己診断にも使う。 */
+/** 表示タイムゾーンの解決。未設定・不正な値なら JST にフォールバックする。 */
+export function resolveTimezoneOffsetMin(env: Env): number {
+  const raw = Number(env.TIMEZONE_OFFSET_MIN);
+  return Number.isFinite(raw) && Math.abs(raw) <= 14 * 60 ? raw : DEFAULT_TZ_OFFSET_MIN;
+}
+
 export function missingConfig(env: Env): string[] {
   const missing: string[] = [];
   if (!env.MOODLE_BASE_URL) missing.push("MOODLE_BASE_URL");

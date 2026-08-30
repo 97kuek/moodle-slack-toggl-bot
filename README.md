@@ -4,6 +4,7 @@ Moodle の課題・締切を定期取得して **Slack を常設の TODO** に�
 **Toggl Track の時間計測**を開始できる個人用ボット。
 
 - Cloudflare Workers + D1 の**無料枠内で常時稼働**（月額 0 円、PC のスリープに影響されない）
+- Moodle の URL・取得方式・タイムゾーンはすべて設定値。**どの大学でもそのまま使える**
 - **1 人 1 デプロイ**のシングルテナント。他人の認証情報を預からない
 - 大学ごとに違う Moodle の事情は `MoodleClient` 1 箇所に閉じ込めてあるので、
   Web Services が使えない環境でも iCal で動く
@@ -16,6 +17,7 @@ Moodle の課題・締切を定期取得して **Slack を常設の TODO** に�
 
 - 新しい課題を検出したら Slack に通知（同時に複数出ても **1 通にまとめる**）
 - 締切の前日 21:00 と 3 時間前にリマインド、毎朝 7:00 に 3 日以内のダイジェスト
+- 毎週日曜 21:00 に**週次サマリ** — 科目別の学習時間、今週完了した課題、来週の締切
 - App Home に締切順の TODO リスト。`▶︎ 開始` / `✓ 完了` / `😴 明日` / `🔗 Moodle`
 - `▶︎ 開始` で Toggl の計測を開始（科目 = プロジェクト、tag = `moodle`）。
   走っている計測があれば自動で止めてから始める
@@ -25,6 +27,16 @@ Moodle の課題・締切を定期取得して **Slack を常設の TODO** に�
 ---
 
 ## セットアップ
+
+手順 0 で取得方式を決めたあとは、**ブートストラップで一括**にできます。
+
+```bash
+npm install
+./scripts/bootstrap.sh      # D1 作成 → wrangler.toml 生成 → マイグレーション → デプロイ
+./scripts/setup-secrets.sh  # シークレットをまとめて登録
+```
+
+以下は各手順の詳細です。手作業で進めたい場合はこちらを追ってください。
 
 ### 0. まず Moodle に繋がるか確かめる（いちばん重要）
 
@@ -217,6 +229,7 @@ curl "http://localhost:8787/cdn-cgi/local/scheduled?cron=*/15+*+*+*+*"
 |---|---|---|
 | `MOODLE_BASE_URL` | wrangler.toml | Moodle のベース URL（末尾スラッシュなし） |
 | `MOODLE_MODE` | wrangler.toml | `ws` または `ical` |
+| `TIMEZONE_OFFSET_MIN` | wrangler.toml | 表示・通知時刻の判定に使う UTC オフセット（分）。`540` = 日本 |
 | `SLACK_TARGET_CHANNEL` | wrangler.toml | 通知先チャンネル。空なら自分への DM |
 | `MOODLE_TOKEN` | secret | Web Services のトークン |
 | `MOODLE_ICAL_URL` | secret | カレンダーエクスポートの URL |
@@ -226,7 +239,10 @@ curl "http://localhost:8787/cdn-cgi/local/scheduled?cron=*/15+*+*+*+*"
 | `TOGGL_API_TOKEN` | secret（任意） | Toggl Track の API トークン。**未設定でも同期・通知・TODO は動く**（計測ボタンだけ無効） |
 | `TOGGL_WORKSPACE_ID` | secret（任意） | 省略時は `/me` の既定ワークスペース |
 
-通知の頻度や取得の範囲は [`src/config.ts`](./src/config.ts) の `CONFIG` にまとまっています。
+通知の頻度・取得範囲・週次サマリの曜日は [`src/config.ts`](./src/config.ts) の `CONFIG` にまとまっています。
+
+**日本以外で使う場合**は `TIMEZONE_OFFSET_MIN` を変えたうえで、`wrangler.toml` の
+`crons` にある朝ダイジェストの時刻（UTC 指定）も合わせて調整してください。
 
 ---
 

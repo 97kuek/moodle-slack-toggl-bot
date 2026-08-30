@@ -18,8 +18,8 @@ migrations_dir = "migrations"
 MOODLE_BASE_URL = "https://moodle.example.ac.jp"
 # "ws" = Web Services / "ical" = カレンダーエクスポート
 MOODLE_MODE = "ws"
-# iCal モードで DTSTART にタイムゾーン指定が無かった場合に採用するオフセット（分）
-MOODLE_ICAL_FALLBACK_TZ_OFFSET_MIN = "540"
+# 表示・通知時刻の判定に使うタイムゾーン（UTC からのオフセット分）。540 = JST
+TIMEZONE_OFFSET_MIN = "540"
 # 通知先チャンネル。空なら SLACK_USER_ID への DM
 SLACK_TARGET_CHANNEL = ""
 
@@ -28,7 +28,7 @@ SLACK_TARGET_CHANNEL = ""
 crons = [
   "*/15 * * * *",  # 同期 + 締切リマインド判定
   "*/5 * * * *",   # Toggl の計測中 entry を App Home に反映
-  "0 22 * * *"     # 朝のダイジェスト（UTC 22:00 = JST 07:00）
+  "0 22 * * *"     # 朝のダイジェスト（UTC 22:00 = JST 07:00。TIMEZONE_OFFSET_MIN に合わせて調整）
 ]
 
 [observability]
