@@ -1,112 +1,75 @@
-# Moodle → Slack TODO + Toggl 時間管理ボット
+# Moodle → Slack TODO Bot
 
-Moodle の課題・締切を定期取得して **Slack を常設の TODO** にし、そのままボタンひとつで
-**Toggl Track の時間計測**を開始できる個人用ボット。
+Moodle の課題・締切を定期取得して Slack を常設の TODO にし、そのまま Toggl Track で作業時間を計測する個人用ボット。
 
 - Cloudflare Workers + D1 の**無料枠内で常時稼働**（月額 0 円、PC のスリープに影響されない）
-- Moodle の URL・取得方式・タイムゾーンはすべて設定値。**どの大学でもそのまま使える**
-- **1 人 1 デプロイ**のシングルテナント。他人の認証情報を預からない
-- 大学ごとに違う Moodle の事情は `MoodleClient` 1 箇所に閉じ込めてあるので、
-  Web Services が使えない環境でも iCal で動く
+- **1 人 1 デプロイ**。他人の認証情報を預からない
+- Moodle の URL・取得方式・タイムゾーンはすべて設定値。**どの大学でも使える**
 
-設計の背景と判断理由は [DESIGN.md](./DESIGN.md) に書いてあります。
+設計と構成の詳細は [DESIGN.md](./DESIGN.md) を参照。
 
 ---
 
 ## できること
 
-- 新しい課題を検出したら Slack に通知（同時に複数出ても **1 通にまとめる**）
-- 締切の前日 21:00 と 3 時間前にリマインド、毎朝 7:00 に 3 日以内のダイジェスト
-- 毎週日曜 21:00 に**週次サマリ** — 科目別の学習時間、今週完了した課題、来週の締切
-- App Home に締切順の TODO リスト。`▶︎ 開始` / `✓ 完了` / `😴 明日` / `🔗 Moodle`
-- `▶︎ 開始` で Toggl の計測を開始（科目 = プロジェクト、tag = `moodle`）。
-  走っている計測があれば自動で止めてから始める
-- Moodle 側で提出を検知したら**自動で完了**（Web Services モードのみ）
-- 締切を 24 時間過ぎたタスクは**自動でアーカイブ**。催促も止まる
+- 新しい課題を検出したら Slack に通知（同時に複数出ても 1 通にまとめる）
+- 締切の前日 21:00 と 3 時間前にリマインド
+- 毎朝 7:00 に 3 日以内のダイジェスト
+- 毎週日曜 21:00 に週次サマリ（科目別の学習時間・完了した課題・来週の締切）
+- App Home に締切順の TODO リスト（`▶︎ 開始` / `✓ 完了` / `😴 明日` / `🔗 Moodle`）
+- `▶︎ 開始` で Toggl の計測を開始（科目 = プロジェクト、tag = `moodle`）
+- Moodle 側で提出を検知したら自動で完了（Web Services モードのみ）
+- 締切を 24 時間過ぎたタスクは自動でアーカイブ
+
+## 必要なもの
+
+- Node.js 20 以降
+- Cloudflare アカウント（無料。カード不要）
+- Slack ワークスペース（アプリを追加できる権限）
+- Toggl Track アカウント（任意。無くても通知と TODO は動く）
 
 ---
 
 ## セットアップ
 
-手順 0 で取得方式を決めたあとは、**ブートストラップで一括**にできます。
+### 0. Moodle に繋がるか確かめる
+
+**ここで取得方式が決まる。コードを書く前に必ず確認する。**
 
 ```bash
-npm install
-./scripts/bootstrap.sh      # D1 作成 → wrangler.toml 生成 → マイグレーション → デプロイ
-./scripts/setup-secrets.sh  # シークレットをまとめて登録
+read -s PW
+curl -s "https://<moodle>/login/token.php" \
+  --data-urlencode "username=<ユーザ名>" --data-urlencode "password=$PW" \
+  -d "service=moodle_mobile_app"
 ```
 
-以下は各手順の詳細です。手作業で進めたい場合はこちらを追ってください。
+| 結果 | モード | 備考 |
+|---|---|---|
+| `{"token":"..."}` | `ws` | 推奨。提出済みの自動判定まで動く |
+| `{"error":"invalidlogin"}` | `ical` | SSO 環境。下記フォールバックへ |
 
-### 0. まず Moodle に繋がるか確かめる（いちばん重要）
+**SSO（学認 / Shibboleth / Entra ID）の場合**
 
-大学の Moodle が SSO（学認 / Shibboleth）ログインだと、トークン取得が通らないことがあります。
-**先にここを確認してください。** 結果でモードが決まります。
+SSO 専用アカウントは Moodle 側にローカルパスワードを持たないため、`token.php` は必ず `invalidlogin` を返す。次のいずれかで対応する。
+
+- ブラウザでログイン → `https://<moodle>/user/managetoken.php` → **Moodle mobile web service** のトークンをコピー（`ws` モード）
+- 上記が空なら、ログイン状態のまま Moodle のカレンダー → **カレンダーをエクスポートする** → 「すべてのイベント」「最近と直近60日」→ URL を取得（`ical` モード）
+
+`ical` モードでは提出済み判定ができないが、締切 +24h の自動アーカイブが効くのでタスクは溜まり続けない。
+
+### 1. 取得とインストール
 
 ```bash
-read -s PW   # 入力したパスワードはシェル履歴に残りません
-curl -s "https://<あなたの大学のmoodle>/login/token.php" \
-  -d "username=<学籍番号など>" --data-urlencode "password=$PW" -d "service=moodle_mobile_app"
-```
-
-| 結果 | 使うモード |
-|---|---|
-| `{"token":"..."}` が返る | **`ws`**（推奨。提出済みの自動判定まで動く） |
-| `{"error":"..."}` が返る | **`ical`**（下記のフォールバック） |
-
-`ws` で行ける場合、使いたい関数が有効か確認しておきます。
-
-```bash
-T=<上で得たトークン>
-curl -s "https://<moodle>/webservice/rest/server.php" \
-  -d "wstoken=$T" -d "wsfunction=core_webservice_get_site_info" -d "moodlewsrestformat=json" \
-  | grep -o 'core_calendar_get_action_events_by_timesort'
-```
-
-**`ical` フォールバック**: Moodle にブラウザでログイン → カレンダー →
-「カレンダーをエクスポートする」→ 発行された URL を `MOODLE_ICAL_URL` に使います。
-このモードでは提出済み判定ができないので完了は手動ですが、
-締切 +24h の自動アーカイブが効くのでタスクが溜まり続けることはありません。
-
-#### SSO（学認 / Shibboleth / Entra ID）で `invalidlogin` になる場合
-
-Web Services が有効でも、SSO 専用アカウントは Moodle 側にローカルパスワードを持たないため
-`token.php` は必ず `invalidlogin` を返します。この場合は**ブラウザで一度ログインしてから**
-トークンを発行します（多要素認証が要るのはこの 1 回だけ）。
-
-1. ブラウザで Moodle にログインする
-2. `https://<moodle>/user/managetoken.php` を開く（設定 → ユーザアカウント → セキュリティキー）
-3. **Moodle mobile web service** の行に出ているトークンをコピーする
-
-このページが無効化されている場合は、ログイン状態のまま次の URL を開きます。
-
-```
-https://<moodle>/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=1&urlscheme=moodlemobile
-```
-
-`moodlemobile://token=xxxxx` へリダイレクトされるので、`token=` 以降をコピーしてデコードします
-（`passport:::トークン:::privatetoken` の真ん中がトークン）。
-
-```bash
-echo '<コピーした文字列>' | base64 -d; echo
-```
-
-この経路で取ったトークンは失効することがあります。失効すると本ボットが Slack に
-「Moodle への接続に失敗しました」と 1 日 1 回だけ通知するので、同じ手順で取り直してください。
-
-### 1. 取得と依存関係
-
-```bash
-git clone <this repo> && cd slackbot
+git clone https://github.com/97kuek/moodle-slack-toggl-bot.git
+cd moodle-slack-toggl-bot
 npm install
 ```
 
 ### 2. Slack アプリを作る
 
-https://api.slack.com/apps → **Create New App** → **From a manifest** で以下を貼ります。
+https://api.slack.com/apps → **Create New App** → **From a manifest** で以下を貼る。
 
-> **Request URL はここでは設定しません。** Worker をまだデプロイしていない段階で URL を書くと、
-> Slack が疎通確認に失敗してアプリ作成そのものが通りません。URL は手順 5 の後に設定します。
+> Request URL はここでは設定しない。Worker が未デプロイの段階で URL を書くと、Slack の疎通確認が失敗してアプリ作成が通らない。手順 6 で設定する。
 
 ```yaml
 display_information:
@@ -132,145 +95,93 @@ settings:
   token_rotation_enabled: false
 ```
 
-作成したら **Install to Workspace** し、次の 3 つを控えます。
+**Install to Workspace** してから次の 3 つを控える。
 
 - **Bot User OAuth Token**（`xoxb-...`）— OAuth & Permissions
-- **Signing Secret** — Basic Information
-- **自分のメンバー ID**（`U...`）— Slack のプロフィール → その他 → メンバー ID をコピー
+- **Signing Secret** — Basic Information → App Credentials
+- **自分のメンバー ID**（`U...`）— Slack のプロフィール → その他 → メンバー ID
 
-### 3. Toggl のトークン
+### 3. Toggl のトークン（任意）
 
-https://track.toggl.com/profile の最下部 **API Token** をコピーします。
+https://track.toggl.com/profile の最下部 **API Token** をコピーする。未設定でも通知と TODO は動く。
 
-### 4. D1 を作る
+### 4. デプロイ
 
 ```bash
-cp wrangler.toml.example wrangler.toml
-npx wrangler d1 create moodle_bot     # 出力された database_id を wrangler.toml に貼る
-npx wrangler d1 migrations apply moodle_bot --remote
+./scripts/bootstrap.sh
 ```
 
-`wrangler.toml` の `[vars]` も自分の環境に合わせます。
+対話で次を実行する。
 
-```toml
-MOODLE_BASE_URL = "https://moodle.example.ac.jp"
-MOODLE_MODE = "ws"     # または "ical"
-```
+- Cloudflare のログイン確認
+- Worker 名・Moodle URL・取得方式・タイムゾーンの設定
+- D1 データベースの作成と `wrangler.toml` の生成
+- スキーマの適用
+- デプロイ（Worker の URL が表示される）
 
-### 5. シークレットを登録してデプロイ
-
-対話式のスクリプトを用意してあります。入力は画面にもシェル履歴にも残りません。
+### 5. シークレットの登録
 
 ```bash
 ./scripts/setup-secrets.sh
-npx wrangler deploy
 ```
 
-個別に入れる場合は次のとおりです。
+入力は画面にもシェル履歴にも残らない。空 Enter でスキップできる。
 
-```bash
-npx wrangler secret put SLACK_BOT_TOKEN
-npx wrangler secret put SLACK_SIGNING_SECRET
-npx wrangler secret put SLACK_USER_ID
-npx wrangler secret put MOODLE_ICAL_URL     # MOODLE_MODE=ws なら MOODLE_TOKEN
-npx wrangler secret put TOGGL_API_TOKEN
-```
+### 6. Slack に Request URL を設定
 
-### 6. Slack に Request URL を設定する
+デプロイで表示された URL の末尾に `/slack/events` を付けたものを、2 か所に登録する。
 
-デプロイで表示された URL の末尾に `/slack/events` を付けたものを、Slack アプリ設定の 2 か所に登録します。
-
-| 画面 | 設定 |
+| 画面 | 操作 |
 |---|---|
-| **Event Subscriptions** | Enable Events を On → Request URL に貼る → **Subscribe to bot events** に `app_home_opened` を追加 → Save |
-| **Interactivity & Shortcuts** | Interactivity を On → Request URL に貼る → Save |
+| **Event Subscriptions** | Enable Events を On → URL を貼る → Verified を確認 → **Subscribe to bot events** に `app_home_opened` を追加 → Save |
+| **Interactivity & Shortcuts** | Interactivity を On → 同じ URL → Save |
 
-どちらも **Verified** と出れば完了です。Event Subscriptions でスコープが増えた場合は
-**Reinstall to Workspace** を求められるので従ってください。
+Signing Secret を先に登録していないと Verified にならない。
 
-### 7. 動作確認
+### 7. 確認
 
 ```bash
-curl https://<your-worker-url>/health
+curl https://<your-worker>.workers.dev/health
 ```
 
-`missing` が空になっていれば必須設定は揃っています。足りないものがあれば名前が出ます。
+- `"missing": []` になっていれば必須設定は揃っている
+- 足りないものがあれば名前が出る
 
-```json
-{"ok":true,"moodle_mode":"ical","missing":[],"toggl":"有効","last_sync_at":1788070460}
-```
-
-Slack でアプリのホームタブを開き、`🔄 今すぐ同期` を押すと課題が並びます。
+Slack でアプリのホームタブを開き `🔄 今すぐ同期` を押すと課題が並ぶ。
 
 ---
 
-## ローカル開発
+## 開発
 
 ```bash
 cp .dev.vars.example .dev.vars     # 値を埋める
 cp wrangler.toml.example wrangler.toml
 npx wrangler d1 migrations apply moodle_bot --local
-npm run dev
-curl http://localhost:8787/health
-npm run typecheck
+
+npm run dev          # ローカル起動（http://localhost:8787）
+npm run typecheck    # 型チェック
+npm run tail         # 本番のログを追う
 ```
 
-Cron はローカルでは自動発火しません。手で叩けます。
-
-```bash
-curl "http://localhost:8787/cdn-cgi/local/scheduled?cron=*/15+*+*+*+*"
-```
-
----
-
-## 設定値
-
-| 名前 | 場所 | 説明 |
-|---|---|---|
-| `MOODLE_BASE_URL` | wrangler.toml | Moodle のベース URL（末尾スラッシュなし） |
-| `MOODLE_MODE` | wrangler.toml | `ws` または `ical` |
-| `TIMEZONE_OFFSET_MIN` | wrangler.toml | 表示・通知時刻の判定に使う UTC オフセット（分）。`540` = 日本 |
-| `SLACK_TARGET_CHANNEL` | wrangler.toml | 通知先チャンネル。空なら自分への DM |
-| `MOODLE_TOKEN` | secret | Web Services のトークン |
-| `MOODLE_ICAL_URL` | secret | カレンダーエクスポートの URL |
-| `SLACK_SIGNING_SECRET` | secret | リクエスト署名の検証用 |
-| `SLACK_BOT_TOKEN` | secret | `xoxb-...` |
-| `SLACK_USER_ID` | secret | DM の宛先（自分の `U...`） |
-| `TOGGL_API_TOKEN` | secret（任意） | Toggl Track の API トークン。**未設定でも同期・通知・TODO は動く**（計測ボタンだけ無効） |
-| `TOGGL_WORKSPACE_ID` | secret（任意） | 省略時は `/me` の既定ワークスペース |
-
-通知の頻度・取得範囲・週次サマリの曜日は [`src/config.ts`](./src/config.ts) の `CONFIG` にまとまっています。
-
-**日本以外で使う場合**は `TIMEZONE_OFFSET_MIN` を変えたうえで、`wrangler.toml` の
-`crons` にある朝ダイジェストの時刻（UTC 指定）も合わせて調整してください。
+- Cron はローカルでは自動発火しない。手動で叩く:
+  `curl "http://localhost:8787/cdn-cgi/local/scheduled?cron=*/15+*+*+*+*"`
+- 手元の `.ics` をパーサに通して確認する（ネットワークにも認証情報にも触れない）:
+  `npm run parse:ics -- /path/to/moodle.ics`
 
 ---
 
 ## 困ったとき
 
-| 症状 | 原因と対処 |
+| 症状 | 対処 |
 |---|---|
-| Slack が Request URL を Verified にしてくれない | URL の末尾が `/slack/events` か、`SLACK_SIGNING_SECRET` が正しいかを確認 |
-| 「Moodle への接続に失敗しました」の DM が届く | トークンが失効している。再発行して `wrangler secret put MOODLE_TOKEN` |
-| 課題が 1 件も出てこない | `MOODLE_MODE` と `MOODLE_BASE_URL` を確認し、手順 0 の curl をもう一度叩く |
-| 計測が始まらない | Toggl のトークンとワークスペースを確認。`npx wrangler tail` でログを見る |
-| 通知が多すぎる / 少なすぎる | `src/config.ts` の `dueSoonSec` `dueTomorrowHourJst` `quiet*` を調整 |
-
-ログは `npx wrangler tail` で追えます。
+| Request URL が Verified にならない | URL の末尾が `/slack/events` か、`SLACK_SIGNING_SECRET` が登録済みかを確認 |
+| 「Moodle への接続に失敗しました」の DM | トークンが失効している。再発行して `wrangler secret put MOODLE_TOKEN` |
+| 課題が 1 件も出てこない | `MOODLE_MODE` と `MOODLE_BASE_URL` を確認し、手順 0 の curl を再実行 |
+| 計測が始まらない | `TOGGL_API_TOKEN` を確認。`npm run tail` でログを見る |
+| 通知が多い / 少ない | [`src/config.ts`](./src/config.ts) の `CONFIG` を調整 |
 
 ---
 
-## 構成
+## ライセンス
 
-```
-src/
-  index.ts          Worker の入口（fetch = Slack / scheduled = cron 3 本）
-  config.ts         環境変数と、挙動を決める定数
-  time.ts           JST 変換と表示フォーマット
-  db/               D1 の型とリポジトリ層
-  moodle/           MoodleClient と 2 実装（webservice / ical）
-  toggl/            Toggl API クライアントと計測の開始・停止
-  sync/             同期エンジン（reconcile）と通知ポリシー（notify）
-  slack/            Block Kit・App Home・ボタンのハンドラ
-migrations/         D1 のスキーマ
-```
+MIT
