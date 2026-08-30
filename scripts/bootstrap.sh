@@ -30,7 +30,7 @@ if [ -f wrangler.toml ]; then
 fi
 
 bold "2. 設定"
-ask WORKER_NAME  "Worker 名（URL の一部になります）" "moodle-slack-toggl-bot"
+ask WORKER_NAME  "Worker 名（URL の一部になります）" "toggl-slack-tasks"
 ask MOODLE_URL   "Moodle のベース URL（末尾スラッシュなし）" "https://moodle.example.ac.jp"
 ask MOODLE_MODE  "取得方式  ws = Web Services / ical = カレンダーエクスポート" "ical"
 ask TZ_MIN       "タイムゾーンの UTC オフセット（分）  540 = 日本" "540"

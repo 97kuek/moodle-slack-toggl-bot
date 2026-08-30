@@ -308,6 +308,14 @@ export async function listRecentlyCompleted(
   return res.results ?? [];
 }
 
+/** 手動で足したタスクだけ削除できる。Moodle 由来は消してもすぐ再取得される。 */
+export async function deleteManualTask(db: D1Database, id: string): Promise<void> {
+  await db.batch([
+    db.prepare(`DELETE FROM tasks WHERE id = ?1 AND source = 'manual'`).bind(id),
+    db.prepare(`DELETE FROM notifications WHERE task_id = ?1`).bind(id),
+  ]);
+}
+
 /** 完了を取り消す。Moodle からは再取得されないので、これが唯一の復旧手段。 */
 export async function markUndone(db: D1Database, id: string): Promise<void> {
   await db

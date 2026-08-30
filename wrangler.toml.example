@@ -1,7 +1,7 @@
 # cp wrangler.toml.example wrangler.toml して、値を自分の環境に合わせる。
 # wrangler.toml は database_id が入るので .gitignore 済み。
 
-name = "moodle-slack-toggl-bot"
+name = "toggl-slack-tasks"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
 

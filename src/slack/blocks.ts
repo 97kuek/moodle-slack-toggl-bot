@@ -15,7 +15,11 @@ export const ACTION = {
   done: "task_done",
   snooze: "task_snooze",
   undone: "task_undone",
+  remove: "task_remove",
   sync: "sync_now",
+  settingsConnection: "open_settings_connection",
+  settingsNotification: "open_settings_notification",
+  addTask: "open_add_task",
 } as const;
 
 const KIND_ICON: Record<string, string> = {
@@ -73,6 +77,16 @@ export function taskBlocks(task: TaskRow, now: number, isRunning: boolean): AnyM
         text: { type: "plain_text", text: "😴 明日", emoji: true },
         value: task.id,
       },
+      ...(task.source === "manual"
+        ? [
+            {
+              type: "button" as const,
+              action_id: ACTION.remove,
+              text: { type: "plain_text" as const, text: "🗑", emoji: true },
+              value: task.id,
+            },
+          ]
+        : []),
       ...(task.url
         ? [
             {
@@ -99,6 +113,8 @@ export function taskBlocks(task: TaskRow, now: number, isRunning: boolean): AnyM
 export function homeView(params: {
   tasks: TaskRow[];
   recentlyCompleted: TaskRow[];
+  missing: string[];
+  togglReady: boolean;
   now: number;
   runningTaskId: string | null;
   runningTitle: string | null;
@@ -133,12 +149,48 @@ export function homeView(params: {
     });
   }
 
+  // 未設定のうちは、何をすればよいかをここに出す
+  if (params.missing.length > 0) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `:gear: *設定が足りていません*\n${params.missing.map((m) => `• ${m}`).join("\n")}`,
+      },
+    });
+  }
+
+  blocks.push({
+    type: "actions",
+    elements: [
+      {
+        type: "button",
+        action_id: ACTION.addTask,
+        text: { type: "plain_text", text: "＋ タスクを追加", emoji: true },
+        value: "add",
+      },
+      {
+        type: "button",
+        action_id: ACTION.settingsConnection,
+        text: { type: "plain_text", text: "⚙️ 接続設定", emoji: true },
+        value: "connection",
+        ...(params.missing.length > 0 ? { style: "primary" as const } : {}),
+      },
+      {
+        type: "button",
+        action_id: ACTION.settingsNotification,
+        text: { type: "plain_text", text: "🔔 通知設定", emoji: true },
+        value: "notification",
+      },
+    ],
+  });
+
   blocks.push({ type: "divider" });
 
   if (tasks.length === 0) {
     blocks.push({
       type: "section",
-      text: { type: "mrkdwn", text: "対応が必要な課題はありません。" },
+      text: { type: "mrkdwn", text: "やることはありません。" },
     });
   } else {
     const groups = new Map<string, TaskRow[]>();
@@ -200,10 +252,12 @@ export function homeView(params: {
     elements: [
       {
         type: "mrkdwn",
-        text:
+        text: [
           params.lastSyncAt === null
             ? "まだ同期していません"
             : `最終同期: ${formatDuration(now - params.lastSyncAt)}前`,
+          params.togglReady ? "Toggl 連携: 有効" : "Toggl 未設定（計測ボタンは無効）",
+        ].join("　·　"),
       },
     ],
   });

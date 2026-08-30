@@ -1,11 +1,5 @@
 import { SlackAPIClient } from "slack-cloudflare-workers";
-import {
-  assertEnv,
-  isTogglConfigured,
-  missingConfig,
-  resolveTimezoneOffsetMin,
-  type Env,
-} from "./config";
+import type { Env } from "./config";
 import * as repo from "./db/repo";
 import { MoodleAuthError, createMoodleClient } from "./moodle";
 import {
@@ -15,6 +9,7 @@ import {
   runNotifications,
 } from "./sync/notify";
 import { syncMoodle, syncSubmissions } from "./sync/reconcile";
+import { isTogglReady, loadSettings, missingSettings, type Settings } from "./settings";
 import { createSlackApp } from "./slack/app";
 import { publishHome } from "./slack/home";
 import { reconcileRunningEntry } from "./toggl/tracking";
@@ -28,20 +23,23 @@ const CRON = {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    setTimezoneOffsetMin(resolveTimezoneOffsetMin(env));
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
       // セットアップ中の自己診断。値は返さず、設定済みかどうかだけを返す。
-      const missing = missingConfig(env);
-      if (!env.SLACK_SIGNING_SECRET) missing.push("SLACK_SIGNING_SECRET");
-      const lastSync = await repo.getStateNumber(env.DB, "last_sync_at");
+      const settings = await loadSettings(env);
+      setTimezoneOffsetMin(settings.timezoneOffsetMin);
+      const missing = missingSettings(settings);
+      if (!env.SLACK_BOT_TOKEN) missing.push("Slack の Bot Token");
+      if (!env.SLACK_SIGNING_SECRET) missing.push("Slack の Signing Secret");
+      if (!env.SLACK_USER_ID) missing.push("Slack のユーザー ID");
       return Response.json({
         ok: missing.length === 0,
-        moodle_mode: env.MOODLE_MODE,
+        moodle_mode: settings.moodleMode,
         missing,
-        toggl: isTogglConfigured(env) ? "有効" : "未設定（計測ボタンのみ無効）",
-        last_sync_at: lastSync,
+        toggl: isTogglReady(settings) ? "有効" : "未設定（計測ボタンのみ無効）",
+        timezone_offset_min: settings.timezoneOffsetMin,
+        last_sync_at: await repo.getStateNumber(env.DB, "last_sync_at"),
         now: nowSec(),
       });
     }
@@ -58,52 +56,64 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    setTimezoneOffsetMin(resolveTimezoneOffsetMin(env));
-    assertEnv(env);
+    // Slack に話しかけられない状態では何もしない。
+    // Worker を作り直したときなど、シークレット未設定の個体が同じ D1 を触って
+    // 通知の権利だけ取って失敗する、という競合を防ぐ。
+    if (!env.SLACK_BOT_TOKEN || !env.SLACK_USER_ID) return;
+
+    const settings = await loadSettings(env);
+    setTimezoneOffsetMin(settings.timezoneOffsetMin);
     const now = nowSec();
     const client = new SlackAPIClient(env.SLACK_BOT_TOKEN);
 
     switch (event.cron) {
-      case CRON.sync:
-        ctx.waitUntil(runSync(env, client, now));
-        return;
       case CRON.tracking:
-        ctx.waitUntil(runTrackingSync(env, client, now));
+        ctx.waitUntil(runTrackingSync(env, settings, client, now));
         return;
+      case CRON.sync:
       default:
-        // 未知の cron は同期として扱っておく（wrangler.toml を触ったときの保険）
-        ctx.waitUntil(runSync(env, client, now));
+        ctx.waitUntil(runSync(env, settings, client, now));
     }
   },
 };
 
-/** 15 分ごと: Moodle と突き合わせて、必要なら通知を出す。 */
-async function runSync(env: Env, client: SlackAPIClient, now: number): Promise<void> {
+/** 15 分ごと: 突き合わせ、必要なら通知、時刻が来ていればダイジェストと週次サマリ。 */
+async function runSync(
+  env: Env,
+  settings: Settings,
+  client: SlackAPIClient,
+  now: number,
+): Promise<void> {
+  if (missingSettings(settings).length > 0) return; // 未設定のうちは静かにしておく
   try {
-    const moodle = createMoodleClient(env);
+    const moodle = createMoodleClient(settings);
     const outcome = await syncMoodle(env.DB, moodle, now);
     await syncSubmissions(env.DB, moodle, now);
-    await runNotifications(env, client, now, outcome.inserted);
-    await maybeSendDigest(env, client, now);
-    await maybeSendWeeklySummary(env, client, now);
-    await publishHome(env, client, now);
+    await runNotifications(env, settings, client, now, outcome.inserted);
+    await maybeSendDigest(env, settings, client, now);
+    await maybeSendWeeklySummary(env, settings, client, now);
+    await publishHome(env, settings, client, now);
   } catch (e) {
     if (e instanceof MoodleAuthError) {
       await notifyTokenExpired(env, client, now, e.message);
       return;
     }
-    // 一時的な失敗は通知しない。次の cron で自然に回復する（§10）。
+    // 一時的な失敗は通知しない。次の cron で自然に回復する。
     console.error("sync failed", e);
   }
 }
 
 /** 5 分ごと: Toggl の計測状態を App Home に反映する。 */
-async function runTrackingSync(env: Env, client: SlackAPIClient, now: number): Promise<void> {
+async function runTrackingSync(
+  env: Env,
+  settings: Settings,
+  client: SlackAPIClient,
+  now: number,
+): Promise<void> {
   try {
-    const running = await repo.getRunningSession(env.DB);
-    if (!running) return; // 計測していないなら描き直す理由がない
-    await reconcileRunningEntry(env);
-    await publishHome(env, client, now);
+    if (!(await repo.getRunningSession(env.DB))) return; // 計測していないなら描き直す理由がない
+    await reconcileRunningEntry(env, settings);
+    await publishHome(env, settings, client, now);
   } catch (e) {
     console.error("tracking sync failed", e);
   }

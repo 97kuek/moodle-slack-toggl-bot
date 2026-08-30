@@ -4,6 +4,19 @@
 
 ---
 
+## 何を中心に置いているか
+
+軸は **Slack 上のタスクと、それに紐づく計測時間**。Moodle も Toggl も、その周りの実装手段として扱う。
+
+- タスクの入口は 2 つ — Moodle からの自動取り込みと、Slack からの手動追加
+- `tasks.source` が `moodle_ws` / `moodle_ical` / `manual` を区別する
+- 同期の消滅検出は `source` で絞るので、手動タスクが Moodle 同期に消されることはない
+- 時間データの正は常にローカルの `time_sessions`。Toggl はその鏡で、外しても他は動く
+
+この置き方にしてあるので、Moodle をやめても Toggl をやめても、残りはそのまま動く。
+
+---
+
 ## 全体構成
 
 Moodle には Webhook が無く、イベントを push してもらえない。したがって**定期ポーリングして差分を検出する同期エンジン**が中核になる。ここを誤ると「毎回同じ課題が通知される」「締切変更に気づかない」という致命的な体験になる。
@@ -100,6 +113,7 @@ Moodle には Webhook が無く、イベントを push してもらえない。�
 | `tasks` | Moodle 由来のタスク。`(source, source_id)` で一意 |
 | `notifications` | 送信済みの記録。`(task_id, kind)` が PRIMARY KEY で冪等性の要 |
 | `time_sessions` | 計測の開始・停止。**時間データの正はここ**で、Toggl はその鏡 |
+| `settings` | Slack から変更した設定。環境変数より優先する |
 | — | `tasks.submission_checked_at` は提出状況を最後に問い合わせた時刻。検査対象の回転に使う |
 | `course_project_map` | 科目 ⇄ Toggl プロジェクトの対応 |
 | `kv_state` | `last_sync_at` などの雑多な状態 |
@@ -175,6 +189,11 @@ Moodle には Webhook が無く、イベントを push してもらえない。�
 ## Slack UI
 
 - **App Home が主役。** チャンネルや DM に流すだけだと流れて消えて TODO にならない
+- ホーム上部に `＋ タスクを追加` `⚙️ 接続設定` `🔔 通知設定`。設定が足りないときは何が足りないかを出し、接続設定を強調する
+- 完了したタスクは 24 時間ホームに残し `↩︎ 戻す` を付ける。Moodle から再取得されないので、押し間違いの復旧手段がこれしかない
+- 手動タスクにだけ `🗑` を出す。Moodle 由来は消してもすぐ再取得される
+- モーダルを開く処理は ack 側で行う。`trigger_id` は 3 秒で失効するため lazy に回すと取りこぼす
+- 認証情報の入力欄は空欄を「変更しない」として扱う。Slack の input は伏字にできないので、既存の値を初期表示すると画面共有で漏れる
 - 締切順に、日付でグルーピング（今日 / 明日 / 今週 / それ以降）
 - 上部に「今日の学習時間」と「計測中タスク」を常時表示
 - DM はイベント発火時のみ。同じボタンを付けて Home を開かずに操作できる
@@ -235,23 +254,32 @@ Moodle には Webhook が無く、イベントを push してもらえない。�
 
 ---
 
-## 設定値
+## 設定の置き場所
 
-| 名前 | 場所 | 説明 |
-|---|---|---|
-| `MOODLE_BASE_URL` | wrangler.toml | Moodle のベース URL（末尾スラッシュなし） |
-| `MOODLE_MODE` | wrangler.toml | `ws` または `ical` |
-| `TIMEZONE_OFFSET_MIN` | wrangler.toml | 表示・判定に使う UTC オフセット（分）。`540` = 日本 |
-| `SLACK_TARGET_CHANNEL` | wrangler.toml | 通知先チャンネル。空なら自分への DM |
-| `MOODLE_TOKEN` | secret | Web Services のトークン |
-| `MOODLE_ICAL_URL` | secret | カレンダーエクスポートの URL |
-| `SLACK_SIGNING_SECRET` | secret | リクエスト署名の検証用 |
-| `SLACK_BOT_TOKEN` | secret | `xoxb-...` |
-| `SLACK_USER_ID` | secret | DM の宛先（自分の `U...`） |
-| `TOGGL_API_TOKEN` | secret（任意） | 未設定でも同期・通知・TODO は動く |
+解決順は **D1 → 環境変数 → コードの既定値**。Slack で変更したものが D1 に入り、何も無ければ従来どおり `wrangler secret` / `vars` が使われる。
 
-- 通知の頻度・取得範囲・週次サマリの曜日は [`src/config.ts`](./src/config.ts) の `CONFIG`
-- 日本以外で使う場合は `TIMEZONE_OFFSET_MIN` に加え、`wrangler.toml` の `crons`（UTC 指定）も調整する
+**Cloudflare 側に必要なのは Slack の 3 つだけ**
+
+| 名前 | 理由 |
+|---|---|
+| `SLACK_SIGNING_SECRET` | 受信リクエストの検証に使う。D1 を読む前に必要なので Secrets に置くしかない |
+| `SLACK_BOT_TOKEN` | これが無いと Slack に話しかけられず、設定画面も出せない |
+| `SLACK_USER_ID` | DM の宛先 |
+
+**Slack から変更するもの**
+
+- 接続設定 — Moodle の URL / 取得方式 / トークン or iCal URL、Toggl のトークンとワークスペース
+- 通知設定 — タイムゾーン、各通知の時刻、静音時間、週次サマリの曜日と時刻、新着通知の有無
+
+**移行**
+
+環境変数にしか無い値は、起動時に一度だけ D1 に写す（`seedSettingsFromEnv`）。既に D1 にある値は上書きしない。これで既存のデプロイを壊さずに移行でき、Worker を作り直しても設定が付いてくる。
+
+**トレードオフ**
+
+Moodle と Toggl のトークンが Workers Secrets から D1 に移る。D1 も保存時に暗号化されるが、Secrets ほど厳密な管理ではない。1 人 1 デプロイの個人利用なら妥当と判断した。
+
+取得範囲や 1 通あたりの件数など、画面に出さない調整値は [`src/config.ts`](./src/config.ts) の `CONFIG` に残している。
 
 ---
 
@@ -279,6 +307,7 @@ scripts/
 ## 意図的に作らないもの
 
 - **マルチユーザー / OAuth インストールフロー** — 1 人 1 デプロイで十分。他人の認証情報を預からない
+- **セットアップ全体の Slack 化** — Cloudflare のデプロイと Slack アプリ作成は、Worker が動いて Slack トークンを持っていないと成立しない。順序の制約なので、そこから先だけを Slack に寄せている
 - **Toggl → Slack の双方向書き込み** — 競合解決のコストに見合わない
 - **スクレイピングによる Moodle 取得** — Moodle 改修のたびに壊れる
 - **カレンダー表示・ガントチャート** — Slack の Block Kit で無理をしない

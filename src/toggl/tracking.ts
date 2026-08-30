@@ -1,4 +1,5 @@
-import { isTogglConfigured, type Env } from "../config";
+import type { Env } from "../config";
+import { isTogglReady, type Settings } from "../settings";
 import * as repo from "../db/repo";
 import type { TaskRow } from "../db/types";
 import { nowSec } from "../time";
@@ -14,8 +15,8 @@ export interface TrackingResult {
   message: string;
 }
 
-export function createTogglClient(env: Env): TogglClient {
-  return new TogglClient(env.TOGGL_API_TOKEN, env.TOGGL_WORKSPACE_ID);
+export function createTogglClient(settings: Settings): TogglClient {
+  return new TogglClient(settings.togglApiToken ?? "", settings.togglWorkspaceId ?? undefined);
 }
 
 /** 科目に対応する Toggl プロジェクトを引く。無ければ作って覚える。 */
@@ -35,18 +36,22 @@ async function resolveProjectId(
 }
 
 const NOT_CONFIGURED =
-  "Toggl の API トークンが未設定です。`npx wrangler secret put TOGGL_API_TOKEN` で登録すると計測できるようになります。";
+  "Toggl の API トークンが未設定です。ホームタブの「⚙️ 接続設定」から登録すると計測できるようになります。";
 
-export async function startTracking(env: Env, taskId: string): Promise<TrackingResult> {
-  if (!isTogglConfigured(env)) return { ok: false, message: NOT_CONFIGURED };
+export async function startTracking(
+  env: Env,
+  settings: Settings,
+  taskId: string,
+): Promise<TrackingResult> {
+  if (!isTogglReady(settings)) return { ok: false, message: NOT_CONFIGURED };
   const now = nowSec();
   const task = await repo.getTask(env.DB, taskId);
   if (!task) return { ok: false, message: "タスクが見つかりませんでした" };
 
   // 走っているものがあれば先に閉じる（Toggl 側も 1 本しか走らせない）
-  await stopTracking(env);
+  await stopTracking(env, settings);
 
-  const toggl = createTogglClient(env);
+  const toggl = createTogglClient(settings);
   try {
     const projectId = await resolveProjectId(env, toggl, task);
     const entry = await toggl.startEntry({
@@ -70,15 +75,15 @@ export async function startTracking(env: Env, taskId: string): Promise<TrackingR
 }
 
 /** 走っている計測を止めて実績を積算する。走っていなければ何もしない。 */
-export async function stopTracking(env: Env): Promise<TrackingResult> {
-  if (!isTogglConfigured(env)) return { ok: false, message: NOT_CONFIGURED };
+export async function stopTracking(env: Env, settings: Settings): Promise<TrackingResult> {
+  if (!isTogglReady(settings)) return { ok: false, message: NOT_CONFIGURED };
   const now = nowSec();
   const running = await repo.getRunningSession(env.DB);
   if (!running) return { ok: true, message: "計測していません" };
 
   if (running.toggl_entry_id !== null) {
     try {
-      await createTogglClient(env).stopEntry(running.toggl_entry_id);
+      await createTogglClient(settings).stopEntry(running.toggl_entry_id);
     } catch (e) {
       // Toggl 側で既に止められていることがある。ローカルの記録は必ず閉じる。
       if (!(e instanceof TogglError) && !(e instanceof TogglRateLimitError)) throw e;
@@ -101,12 +106,12 @@ export async function stopTracking(env: Env): Promise<TrackingResult> {
  * 表示合わせだけの片方向同期で、Toggl の内容をこちらから書き戻すことはしない。
  * @returns 表示が変わったら true
  */
-export async function reconcileRunningEntry(env: Env): Promise<boolean> {
-  if (!isTogglConfigured(env)) return false;
+export async function reconcileRunningEntry(env: Env, settings: Settings): Promise<boolean> {
+  if (!isTogglReady(settings)) return false;
   const running = await repo.getRunningSession(env.DB);
   if (!running) return false;
 
-  const toggl = createTogglClient(env);
+  const toggl = createTogglClient(settings);
   const current = await toggl.getCurrentEntry();
   if (current && current.id === running.toggl_entry_id) return false;
 

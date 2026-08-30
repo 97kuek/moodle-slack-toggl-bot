@@ -1,8 +1,8 @@
 {
-  "name": "moodle-slack-toggl-bot",
+  "name": "toggl-slack-tasks",
   "version": "0.1.0",
   "private": true,
-  "description": "Moodle の課題を Slack の TODO にして、そのまま Toggl Track で時間計測する個人用ボット",
+  "description": "Slack から Toggl の時間計測を回すタスク管理。Moodle の課題を自動で取り込む",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",

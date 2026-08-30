@@ -1,20 +1,20 @@
-import { resolveTimezoneOffsetMin, type Env } from "../config";
+import type { Settings } from "../settings";
 import type { MoodleClient } from "./client";
 import { ICalMoodleClient } from "./ical";
 import { WebServiceMoodleClient } from "./webservice";
 
-/** MOODLE_MODE に応じた実装を返す。呼び出し側は MoodleClient しか知らない。 */
-export function createMoodleClient(env: Env): MoodleClient {
-  if (env.MOODLE_MODE === "ical") {
-    if (!env.MOODLE_ICAL_URL) throw new Error("MOODLE_ICAL_URL が設定されていません");
+/** 設定に応じた実装を返す。呼び出し側は MoodleClient しか知らない。 */
+export function createMoodleClient(settings: Settings): MoodleClient {
+  if (settings.moodleMode === "ical") {
+    if (!settings.moodleIcalUrl) throw new Error("Moodle の iCal URL が未設定です");
     return new ICalMoodleClient(
-      env.MOODLE_ICAL_URL,
-      env.MOODLE_BASE_URL.replace(/\/$/, ""),
-      resolveTimezoneOffsetMin(env),
+      settings.moodleIcalUrl,
+      settings.moodleBaseUrl,
+      settings.timezoneOffsetMin,
     );
   }
-  if (!env.MOODLE_TOKEN) throw new Error("MOODLE_TOKEN が設定されていません");
-  return new WebServiceMoodleClient(env.MOODLE_BASE_URL.replace(/\/$/, ""), env.MOODLE_TOKEN);
+  if (!settings.moodleToken) throw new Error("Moodle のトークンが未設定です");
+  return new WebServiceMoodleClient(settings.moodleBaseUrl, settings.moodleToken);
 }
 
 export * from "./client";

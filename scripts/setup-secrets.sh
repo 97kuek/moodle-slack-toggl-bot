@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
-# シークレットをまとめて Cloudflare に登録する。
+# Slack の認証情報だけを Cloudflare に登録する。
 #   ./scripts/setup-secrets.sh
-# 入力は画面に表示されず、シェル履歴にも残らない。空 Enter でスキップできる。
+# Moodle と Toggl の設定は Slack のホームタブ →「⚙️ 接続設定」から入れる。
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 if [ ! -f wrangler.toml ]; then
-  echo "wrangler.toml がありません。cp wrangler.toml.example wrangler.toml から始めてください。" >&2
+  echo "wrangler.toml がありません。先に ./scripts/bootstrap.sh を実行してください。" >&2
   exit 1
 fi
-
-MODE=$(grep -E '^MOODLE_MODE' wrangler.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
-echo "MOODLE_MODE = ${MODE:-ws}"
 
 put() {
   local name="$1" desc="$2" value err
@@ -32,20 +29,22 @@ put() {
   fi
 }
 
-put SLACK_BOT_TOKEN      "Slack アプリの Bot User OAuth Token（xoxb- で始まる）"
-put SLACK_SIGNING_SECRET "Slack アプリの Basic Information にある Signing Secret"
-put SLACK_USER_ID        "自分の Slack メンバー ID（U で始まる。プロフィール → その他 → メンバー ID）"
+echo "Slack の認証情報を登録します。この 3 つだけが Cloudflare 側に必要です。"
 
-if [ "$MODE" = "ical" ]; then
-  put MOODLE_ICAL_URL "Moodle のカレンダーエクスポート URL（export_execute.php?... の全体）"
-else
-  put MOODLE_TOKEN "Moodle Web Services のトークン（32 桁）"
-fi
-
-put TOGGL_API_TOKEN "Toggl Track の API Token（https://track.toggl.com/profile の最下部）"
+put SLACK_BOT_TOKEN      "Bot User OAuth Token（xoxb- で始まる）— OAuth & Permissions"
+put SLACK_SIGNING_SECRET "Signing Secret — Basic Information → App Credentials"
+put SLACK_USER_ID        "自分の Slack メンバー ID（U で始まる）— プロフィール → その他 → メンバー ID"
 
 echo
-echo "登録済みのシークレット:"
+echo "登録済み:"
 npx wrangler secret list 2>/dev/null | grep -oE '"name": "[^"]+"' | sed 's/"name": /  /;s/"//g'
-echo
-echo "確認: デプロイ時に表示された URL の /health を開いて \"missing\": [] を確認してください"
+cat <<'EOS'
+
+次にやること
+  1. Slack アプリの Request URL を 2 か所に設定する（デプロイ時に表示された URL + /slack/events）
+       - Event Subscriptions（bot events に app_home_opened を追加）
+       - Interactivity & Shortcuts
+  2. Slack でアプリのホームタブを開き、「⚙️ 接続設定」から
+     Moodle の URL と iCal URL（または Web Services トークン）、Toggl のトークンを入れる
+
+EOS

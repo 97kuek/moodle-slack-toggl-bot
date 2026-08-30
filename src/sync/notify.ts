@@ -1,5 +1,6 @@
 import type { SlackAPIClient } from "slack-cloudflare-workers";
 import { CONFIG, type Env } from "../config";
+import type { Settings } from "../settings";
 import * as repo from "../db/repo";
 import type { NotificationKind, TaskRow } from "../db/types";
 import { notificationBlocks } from "../slack/blocks";
@@ -36,11 +37,12 @@ interface Batch {
 
 export async function runNotifications(
   env: Env,
+  settings: Settings,
   client: SlackAPIClient,
   now: number,
   newlyInserted: TaskRow[],
 ): Promise<number> {
-  if (isQuietHour(now, CONFIG.quietStartHour, CONFIG.quietEndHour)) return 0;
+  if (isQuietHour(now, settings.quietStartHour, settings.quietEndHour)) return 0;
 
   const db = env.DB;
   const active = await repo.listActiveTasks(db, CONFIG.maxTasksOnHome * 2);
@@ -52,20 +54,20 @@ export async function runNotifications(
     (t) =>
       t.due_at !== null &&
       localDayOffset(t.due_at, now) === 1 &&
-      hourJst >= CONFIG.dueTomorrowHour &&
+      hourJst >= settings.dueTomorrowHour &&
       !isSnoozed(t),
   );
 
   // 最終警告だけはスヌーズを無視する
   const dueSoon = active.filter(
-    (t) => t.due_at !== null && t.due_at > now && t.due_at - now <= CONFIG.dueSoonSec,
+    (t) => t.due_at !== null && t.due_at > now && t.due_at - now <= settings.dueSoonHours * 3600,
   );
 
   const candidates: Batch[] = [
     {
       kind: "new",
       headline: "*新しい課題が出ました*",
-      tasks: newlyInserted.filter((t) => !isSnoozed(t)),
+      tasks: settings.notifyNew ? newlyInserted.filter((t) => !isSnoozed(t)) : [],
     },
     { kind: "due_tomorrow", headline: "*明日締切の課題があります*", tasks: dueTomorrow },
     { kind: "due_3h", headline: ":rotating_light: *まもなく締切です。提出しましたか？*", tasks: dueSoon },
@@ -116,12 +118,13 @@ export async function runNotifications(
  */
 export async function maybeSendDigest(
   env: Env,
+  settings: Settings,
   client: SlackAPIClient,
   now: number,
 ): Promise<boolean> {
   const db = env.DB;
 
-  const target = startOfLocalDay(now) + CONFIG.digestHour * 3600;
+  const target = startOfLocalDay(now) + settings.digestHour * 3600;
   if (now < target) return false;
   const last = await repo.getStateNumber(db, "last_digest_at");
   if (last !== null && last >= target) return false;
@@ -161,7 +164,7 @@ export async function notifyTokenExpired(
   await repo.setState(env.DB, "last_token_alert_at", String(now));
   await client.chat.postMessage({
     channel: resolveChannel(env),
-    text: `:warning: Moodle への接続に失敗しました（${detail}）。トークンを再発行して \`wrangler secret put MOODLE_TOKEN\` で更新してください。`,
+    text: `:warning: Moodle への接続に失敗しました（${detail}）。ホームタブの「⚙️ 接続設定」から再設定してください。`,
   });
 }
 
@@ -189,14 +192,15 @@ function fallbackText(kind: NotificationKind, tasks: TaskRow[], now: number): st
  */
 export async function maybeSendWeeklySummary(
   env: Env,
+  settings: Settings,
   client: SlackAPIClient,
   now: number,
 ): Promise<boolean> {
   const db = env.DB;
   const weekStart = startOfLocalWeek(now);
   // 週の始まりは月曜。そこから目的の曜日・時刻を出す（日曜 = 月曜 +6 日）。
-  const weekdayOffset = (CONFIG.weeklySummaryWeekday + 6) % 7;
-  const target = weekStart + weekdayOffset * 86400 + CONFIG.weeklySummaryHour * 3600;
+  const weekdayOffset = (settings.weeklySummaryWeekday + 6) % 7;
+  const target = weekStart + weekdayOffset * 86400 + settings.weeklySummaryHour * 3600;
 
   if (now < target) return false;
   const last = await repo.getStateNumber(db, "last_weekly_summary_at");

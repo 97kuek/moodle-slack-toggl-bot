@@ -1,12 +1,14 @@
 import type { SlackAPIClient } from "slack-cloudflare-workers";
 import { CONFIG, type Env } from "../config";
 import * as repo from "../db/repo";
+import { isTogglReady, missingSettings, type Settings } from "../settings";
 import { startOfLocalDay } from "../time";
 import { homeView } from "./blocks";
 
-/** App Home を描き直す。TODO の主役はここ（§7）。 */
+/** App Home を描き直す。TODO の主役はここ。 */
 export async function publishHome(
   env: Env,
+  settings: Settings,
   client: SlackAPIClient,
   now: number,
   warning: string | null = null,
@@ -25,6 +27,8 @@ export async function publishHome(
   const view = homeView({
     tasks,
     recentlyCompleted,
+    missing: missingSettings(settings),
+    togglReady: isTogglReady(settings),
     now,
     runningTaskId: running?.task_id ?? null,
     runningTitle: runningTask?.title ?? null,
