@@ -34,6 +34,12 @@ interface FocusProject {
   name: string;
 }
 
+function projectIdField(projectId: string | null): { project_id?: number } {
+  if (!projectId) return {};
+  const n = Number(projectId);
+  return Number.isFinite(n) ? { project_id: n } : {};
+}
+
 export class TogglFocusClient implements TimeTracker {
   readonly kind = "focus" as const;
   private workspaceId: string | null;
@@ -117,7 +123,9 @@ export class TogglFocusClient implements TimeTracker {
         start: toIso(params.startedAt),
         type: "activity",
         description: params.description.slice(0, 200),
-        ...(params.projectId ? { project_id: params.projectId } : {}),
+        // API は project_id を int64 で受ける。id は実装間で文字列に揃えているので、
+        // ここで数値に戻す（数値にできないものは送らない）。
+        ...projectIdField(params.projectId),
       },
     });
     if (!e) throw new TrackerError("Toggl が計測開始に応答しませんでした");
@@ -139,9 +147,10 @@ export class TogglFocusClient implements TimeTracker {
     const hit = items.find((p) => p.name === name);
     if (hit) return String(hit.id);
 
+    // name だけで作ると active: false になり、アプリ側で扱いにくくなる
     const created = await this.call<FocusProject>(`${scope}/projects`, {
       method: "POST",
-      body: { name },
+      body: { name, active: true },
     });
     return created ? String(created.id) : null;
   }
