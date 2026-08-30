@@ -52,6 +52,9 @@ export const SETTING_KEYS = [
 
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
+/** この文字だけを入れて保存すると、その設定を消す。 */
+export const CLEAR_MARKER = "-";
+
 export async function loadStoredSettings(db: D1Database): Promise<Map<string, string>> {
   const res = await db.prepare(`SELECT key, value FROM settings`).all<{ key: string; value: string }>();
   return new Map((res.results ?? []).map((r) => [r.key, r.value]));
@@ -65,7 +68,12 @@ export async function saveSettings(
   const statements: D1PreparedStatement[] = [];
   for (const [key, value] of Object.entries(values)) {
     if (value === null || value === undefined || value === "") {
-      // 空欄は「変更しない」。消したいときは明示的に delete する。
+      // 空欄は「変更しない」。既存の値をそのまま残す。
+      continue;
+    }
+    if (value === CLEAR_MARKER) {
+      // 空欄が「変更しない」である以上、消すための入力が別に要る。
+      statements.push(db.prepare(`DELETE FROM settings WHERE key = ?1`).bind(key));
       continue;
     }
     statements.push(

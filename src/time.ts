@@ -78,8 +78,10 @@ export function localDayOffset(epochSec: number, now: number): number {
 
 /** 静音時間かどうか。 */
 export function isQuietHour(epochSec: number, startHour: number, endHour: number): boolean {
+  if (startHour === endHour) return false; // 幅ゼロ＝静音なし
   const h = local(epochSec).hour;
-  return h >= startHour && h < endHour;
+  // 22時→7時 のように日をまたぐ指定を素直に扱う
+  return startHour < endHour ? h >= startHour && h < endHour : h >= startHour || h < endHour;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");

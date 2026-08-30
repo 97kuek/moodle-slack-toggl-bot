@@ -93,7 +93,7 @@ export class TogglFocusClient implements TimeTracker {
   private async scope(): Promise<string> {
     if (!this.organizationId) {
       throw new TrackerError(
-        "Toggl の組織 ID が未設定です。「⚙️ 接続設定」から登録してください。",
+        "Toggl の組織 ID が未設定です。「接続設定」から登録してください。",
       );
     }
     return `/organizations/${this.organizationId}/workspaces/${await this.getWorkspaceId()}`;

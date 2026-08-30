@@ -1,6 +1,7 @@
 import { SlackAPIClient } from "slack-cloudflare-workers";
 import type { Env } from "./config";
 import * as repo from "./db/repo";
+import type { TaskRow } from "./db/types";
 import { MoodleAuthError, createMoodleClient } from "./moodle";
 import {
   maybeSendDigest,
@@ -97,22 +98,30 @@ async function runSync(
   client: SlackAPIClient,
   now: number,
 ): Promise<void> {
-  if (missingSettings(settings).length > 0) return; // 未設定のうちは静かにしておく
+  // Moodle は任意。未設定でも、手で足したタスクの通知とサマリは動かす。
+  let newTasks: TaskRow[] = [];
+  if (missingSettings(settings).length === 0) {
+    try {
+      const moodle = createMoodleClient(settings);
+      newTasks = (await syncMoodle(env.DB, moodle, now)).inserted;
+      await syncSubmissions(env.DB, moodle, now);
+    } catch (e) {
+      if (e instanceof MoodleAuthError) {
+        await notifyTokenExpired(env, client, now, e.message);
+      } else {
+        // 一時的な失敗は通知しない。次の cron で自然に回復する。
+        console.error("moodle sync failed", e);
+      }
+    }
+  }
+
   try {
-    const moodle = createMoodleClient(settings);
-    const outcome = await syncMoodle(env.DB, moodle, now);
-    await syncSubmissions(env.DB, moodle, now);
-    await runNotifications(env, settings, client, now, outcome.inserted);
+    await runNotifications(env, settings, client, now, newTasks);
     await maybeSendDigest(env, settings, client, now);
     await maybeSendWeeklySummary(env, settings, client, now);
     await publishHome(env, settings, client, now);
   } catch (e) {
-    if (e instanceof MoodleAuthError) {
-      await notifyTokenExpired(env, client, now, e.message);
-      return;
-    }
-    // 一時的な失敗は通知しない。次の cron で自然に回復する。
-    console.error("sync failed", e);
+    console.error("notify failed", e);
   }
 }
 

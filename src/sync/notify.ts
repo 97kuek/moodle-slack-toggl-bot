@@ -70,7 +70,7 @@ export async function runNotifications(
       tasks: settings.notifyNew ? newlyInserted.filter((t) => !isSnoozed(t)) : [],
     },
     { kind: "due_tomorrow", headline: "*明日締切の課題があります*", tasks: dueTomorrow },
-    { kind: "due_3h", headline: ":rotating_light: *まもなく締切です。提出しましたか？*", tasks: dueSoon },
+    { kind: "due_3h", headline: "*まもなく締切です。提出しましたか？*", tasks: dueSoon },
   ];
 
   let sent = 0;
@@ -169,7 +169,7 @@ export async function notifyTokenExpired(
   await repo.setState(env.DB, "last_token_alert_at", String(now));
   await client.chat.postMessage({
     channel: resolveChannel(env),
-    text: `:warning: Moodle への接続に失敗しました（${detail}）。ホームタブの「⚙️ 接続設定」から再設定してください。`,
+    text: `Moodle への接続に失敗しました（${detail}）。ホームタブの「接続設定」から再設定してください。`,
   });
 }
 

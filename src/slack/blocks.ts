@@ -16,97 +16,94 @@ export const ACTION = {
   done: "task_done",
   snooze: "task_snooze",
   undone: "task_undone",
-  remove: "task_remove",
+  more: "task_more",
   sync: "sync_now",
   settingsConnection: "open_settings_connection",
   settingsNotification: "open_settings_notification",
   addTask: "open_add_task",
 } as const;
 
-const KIND_ICON: Record<string, string> = {
-  assign: "📝",
-  quiz: "🧪",
-  event: "📅",
-};
-
-/** 1 件のタスクを、見出し + 操作ボタンの 2 ブロックにする。 */
+/**
+ * タスク 1 件を「見出し + 操作」の 2 ブロックで描く。
+ *
+ * よく使う操作だけをボタンに出し、残りは「…」にまとめている。
+ * ボタンが 4 つ並ぶと目が滑って、結局どれも押されなくなるため。
+ */
 export function taskBlocks(task: TaskRow, now: number, isRunning: boolean): AnyMessageBlock[] {
-  const icon = KIND_ICON[task.kind ?? "event"] ?? "📅";
-  const course = task.course_name ? `*${escapeMrkdwn(task.course_name)}* / ` : "";
-  const due =
-    task.due_at === null
-      ? "期限なし"
-      : `${formatDue(task.due_at, now)} — ${formatRemaining(task.due_at, now)}`;
-
-  const marks: string[] = [];
-  if (isRunning) marks.push("🔴 計測中");
-  else if (task.tracked_sec >= CONFIG.startedThresholdSec) {
-    marks.push(`着手済み ${formatDuration(task.tracked_sec)}`);
+  const meta: string[] = [];
+  if (task.course_name) meta.push(escapeMrkdwn(task.course_name));
+  if (task.due_at !== null) {
+    meta.push(formatDue(task.due_at, now));
+    meta.push(formatRemaining(task.due_at, now));
+  } else {
+    meta.push("期限なし");
   }
-  if (task.snooze_until !== null && task.snooze_until > now) marks.push("😴 スヌーズ中");
+  if (isRunning) meta.push("計測中");
+  else if (task.tracked_sec >= CONFIG.startedThresholdSec) {
+    meta.push(`着手 ${formatDuration(task.tracked_sec)}`);
+  }
+  if (task.snooze_until !== null && task.snooze_until > now) meta.push("スヌーズ中");
 
-  const meta = [due, ...marks].join(" · ");
-
-  const buttons: AnyMessageBlock = {
-    type: "actions",
-    block_id: `task_actions_${task.id}`,
-    elements: [
-      isRunning
-        ? {
-            type: "button",
-            action_id: ACTION.stop,
-            text: { type: "plain_text", text: "⏹ 停止", emoji: true },
-            value: task.id,
-            style: "danger",
-          }
-        : {
-            type: "button",
-            action_id: ACTION.start,
-            text: { type: "plain_text", text: "▶︎ 開始", emoji: true },
-            value: task.id,
-            style: "primary",
-          },
-      {
-        type: "button",
-        action_id: ACTION.done,
-        text: { type: "plain_text", text: "✓ 完了", emoji: true },
-        value: task.id,
-      },
-      {
-        type: "button",
-        action_id: ACTION.snooze,
-        text: { type: "plain_text", text: "😴 明日", emoji: true },
-        value: task.id,
-      },
-      ...(task.source === "manual"
-        ? [
-            {
-              type: "button" as const,
-              action_id: ACTION.remove,
-              text: { type: "plain_text" as const, text: "🗑", emoji: true },
-              value: task.id,
-            },
-          ]
-        : []),
-      ...(task.url
-        ? [
-            {
-              type: "button" as const,
-              action_id: `open_moodle_${task.id}`,
-              text: { type: "plain_text" as const, text: "🔗 Moodle", emoji: true },
-              url: task.url,
-            },
-          ]
-        : []),
-    ],
-  };
+  const more: {
+    text: { type: "plain_text"; text: string; emoji: true };
+    value: string;
+    url?: string;
+  }[] = [
+    {
+      text: { type: "plain_text", text: "明日まで通知しない", emoji: true },
+      value: `snooze:${task.id}`,
+    },
+  ];
+  if (task.url) {
+    more.push({
+      text: { type: "plain_text", text: "リンクを開く", emoji: true },
+      value: `open:${task.id}`,
+      url: task.url,
+    });
+  }
+  if (task.source === "manual") {
+    more.push({
+      text: { type: "plain_text", text: "削除", emoji: true },
+      value: `remove:${task.id}`,
+    });
+  }
 
   return [
     {
       type: "section",
-      text: { type: "mrkdwn", text: `${icon} ${course}${escapeMrkdwn(task.title)}\n\`${meta}\`` },
+      text: {
+        type: "mrkdwn",
+        text: `*${escapeMrkdwn(task.title)}*\n${meta.join("　·　")}`,
+      },
     },
-    buttons,
+    {
+      type: "actions",
+      block_id: `task_actions_${task.id}`,
+      elements: [
+        isRunning
+          ? {
+              type: "button",
+              action_id: ACTION.stop,
+              text: { type: "plain_text", text: "停止", emoji: true },
+              value: task.id,
+              style: "danger",
+            }
+          : {
+              type: "button",
+              action_id: ACTION.start,
+              text: { type: "plain_text", text: "開始", emoji: true },
+              value: task.id,
+              style: "primary",
+            },
+        {
+          type: "button",
+          action_id: ACTION.done,
+          text: { type: "plain_text", text: "完了", emoji: true },
+          value: task.id,
+        },
+        { type: "overflow", action_id: ACTION.more, options: more },
+      ],
+    },
   ];
 }
 
@@ -132,22 +129,22 @@ export function homeView(params: {
   // 開始時刻を併記して、数字が止まって見えても意味が取れるようにする。
   const runningLine =
     params.runningTaskId && params.runningTitle && params.runningSince !== null
-      ? `🔴 *計測中* — ${escapeMrkdwn(params.runningTitle)}\n` +
-        `　　${formatClock(params.runningSince)} 開始 · ${formatDuration(now - params.runningSince)} 経過`
-      : "⏸ 計測していません";
+      ? `*計測中* — ${escapeMrkdwn(params.runningTitle)}\n` +
+        `　${formatClock(params.runningSince)} 開始 · ${formatDuration(now - params.runningSince)} 経過`
+      : "計測していません";
 
   blocks.push({
     type: "section",
     text: {
       type: "mrkdwn",
-      text: `*📚 今日の学習*　\`${formatDuration(params.todayTrackedSec)}\`\n${runningLine}`,
+      text: `*今日の学習*　${formatDuration(params.todayTrackedSec)}\n${runningLine}`,
     },
   });
 
   if (params.warning) {
     blocks.push({
       type: "section",
-      text: { type: "mrkdwn", text: `:warning: ${params.warning}` },
+      text: { type: "mrkdwn", text: `*うまくいきませんでした*\n${params.warning}` },
     });
   }
 
@@ -157,7 +154,9 @@ export function homeView(params: {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `:gear: *設定が足りていません*\n${params.missing.map((m) => `• ${m}`).join("\n")}`,
+        text:
+          `*設定が足りていません*\n${params.missing.map((m) => `• ${m}`).join("\n")}\n` +
+          "下の「接続設定」から入力してください。",
       },
     });
   }
@@ -168,20 +167,20 @@ export function homeView(params: {
       {
         type: "button",
         action_id: ACTION.addTask,
-        text: { type: "plain_text", text: "＋ タスクを追加", emoji: true },
+        text: { type: "plain_text", text: "タスクを追加", emoji: true },
         value: "add",
       },
       {
         type: "button",
         action_id: ACTION.settingsConnection,
-        text: { type: "plain_text", text: "⚙️ 接続設定", emoji: true },
+        text: { type: "plain_text", text: "接続設定", emoji: true },
         value: "connection",
         ...(params.missing.length > 0 ? { style: "primary" as const } : {}),
       },
       {
         type: "button",
         action_id: ACTION.settingsNotification,
-        text: { type: "plain_text", text: "🔔 通知設定", emoji: true },
+        text: { type: "plain_text", text: "通知設定", emoji: true },
         value: "notification",
       },
     ],
@@ -230,7 +229,7 @@ export function homeView(params: {
         accessory: {
           type: "button",
           action_id: ACTION.undone,
-          text: { type: "plain_text", text: "↩︎ 戻す", emoji: true },
+          text: { type: "plain_text", text: "戻す", emoji: true },
           value: t.id,
         },
       });
@@ -244,7 +243,7 @@ export function homeView(params: {
       {
         type: "button",
         action_id: ACTION.sync,
-        text: { type: "plain_text", text: "🔄 今すぐ同期", emoji: true },
+        text: { type: "plain_text", text: "同期", emoji: true },
         value: "sync",
       },
     ],

@@ -22,10 +22,10 @@ export interface TrackingResult {
 }
 
 const NOT_CONFIGURED =
-  "Toggl のトークンが未設定です。ホームタブの「⚙️ 接続設定」から登録すると計測できるようになります。";
+  "Toggl のトークンが未設定です。ホームタブの「接続設定」から登録すると計測できるようになります。";
 
 const AUTH_FAILED =
-  "Toggl のトークンが無効か、有効期限が切れています。プロフィール設定で発行し直して、「⚙️ 接続設定」に貼り直してください。";
+  "Toggl のトークンが無効か、有効期限が切れています。プロフィール設定で発行し直して、「接続設定」に貼り直してください。";
 
 /** 未設定・設定不足を 1 か所で判定する。 */
 function resolveTracker(settings: Settings): { tracker: TimeTracker | null; message: string } {
@@ -35,7 +35,7 @@ function resolveTracker(settings: Settings): { tracker: TimeTracker | null; mess
   if (missing.length > 0) {
     return {
       tracker: null,
-      message: `${missing.join("・")}が未設定です。ホームタブの「⚙️ 接続設定」から登録してください。`,
+      message: `${missing.join("・")}が未設定です。ホームタブの「接続設定」から登録してください。`,
     };
   }
   return { tracker, message: "" };
@@ -91,18 +91,18 @@ export async function startTracking(
 
 /** 走っている計測を止めて実績を積算する。走っていなければ何もしない。 */
 export async function stopTracking(env: Env, settings: Settings): Promise<TrackingResult> {
-  const { tracker, message } = resolveTracker(settings);
-  if (!tracker) return { ok: false, message };
-
   const now = nowSec();
   const running = await repo.getRunningSession(env.DB);
   if (!running) return { ok: true, message: "計測していません" };
 
-  if (running.toggl_entry_id !== null) {
+  // トークンが失効していても、ローカルの記録は必ず閉じる。
+  // ここで諦めると計測中のまま戻せなくなり、実績が際限なく増えてしまう。
+  const { tracker } = resolveTracker(settings);
+  if (tracker && running.toggl_entry_id !== null) {
     try {
       await tracker.stop(running.toggl_entry_id, now);
     } catch (e) {
-      // 計測側で既に止められていることがある。ローカルの記録は必ず閉じる。
+      // 計測側で既に止められていることがある
       if (!isKnown(e)) throw e;
     }
   }

@@ -102,7 +102,7 @@ export function connectionModal(s: Settings): ModalView {
 
   const blocks: AnyModalBlock[] = [
     header("Moodle"),
-    note("課題を自動で取り込みます。使わない場合は空のままで構いません。"),
+    note("課題を自動で取り込みます。使わない場合は空のままで構いません。手で追加したタスクだけでも動きます。"),
     text("moodle_base_url", "Moodle の URL", {
       optional: true,
       initial: s.moodleBaseUrl,
@@ -116,7 +116,7 @@ export function connectionModal(s: Settings): ModalView {
 
     { type: "divider" },
     header("Toggl"),
-    note("時間計測に使います。未設定でも通知とタスク管理は動きます。"),
+    note("時間計測に使います。未設定でも通知とタスク管理は動きます。\n入力欄を空のままにすると変更されません。設定を消したいときは `-` だけを入れて保存してください。"),
     text("toggl_api_token", "API トークン", {
       optional: true,
       placeholder: `${set(s.togglApiToken)}（変更する場合のみ入力）`,

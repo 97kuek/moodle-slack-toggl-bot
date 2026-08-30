@@ -91,28 +91,26 @@ export function createSlackApp(env: Env): SlackApp<Env> {
     },
   );
 
+  // 「…」にまとめた操作。値は "コマンド:タスクid" の形で入れてある。
   app.action(
-    { type: "button", action_id: ACTION.snooze },
+    { type: "overflow", action_id: ACTION.more },
     async () => {},
     async ({ context, payload }) => {
-      const taskId = buttonValue(payload);
+      const raw = payload.actions?.[0]?.selected_option?.value ?? "";
+      const [command, taskId] = raw.split(":");
       if (!taskId) return;
-      const settings = await withSettings();
       const now = nowSec();
-      await repo.snoozeTask(env.DB, taskId, snoozeUntilTomorrowMorning(now));
-      await publishHome(env, settings, context.client, now);
-    },
-  );
-
-  // 手動で足したタスクだけ消せる。Moodle 由来は消してもすぐ再取得されるため。
-  app.action(
-    { type: "button", action_id: ACTION.remove },
-    async () => {},
-    async ({ context, payload }) => {
-      const taskId = buttonValue(payload);
-      if (!taskId) return;
-      await repo.deleteManualTask(env.DB, taskId);
-      await publishHome(env, await withSettings(), context.client, nowSec());
+      switch (command) {
+        case "snooze":
+          await repo.snoozeTask(env.DB, taskId, snoozeUntilTomorrowMorning(now));
+          break;
+        case "remove":
+          await repo.deleteManualTask(env.DB, taskId);
+          break;
+        default:
+          return; // "open" はリンクを開くだけなので、ここでは何もしない
+      }
+      await publishHome(env, await withSettings(), context.client, now);
     },
   );
 

@@ -33,7 +33,7 @@ export function parseOrganizationId(raw: string | null): string | null {
   return m?.[1] ?? null;
 }
 
-/** 「😴 明日」= 翌日 9:00 まで黙る。 */
+/** 「明日まで通知しない」= 翌日 9:00 まで黙る。 */
 export function snoozeUntilTomorrowMorning(now: number): number {
   return startOfLocalDay(now) + 24 * 60 * 60 + 9 * 60 * 60;
 }
