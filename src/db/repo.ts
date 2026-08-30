@@ -19,7 +19,7 @@ export function newId(): string {
 
 const TASK_COLUMNS = `id, source, source_id, course_id, course_name, title, kind, url,
   instance_id, due_at, submitted_at, status, snooze_until, tracked_sec, completed_at,
-  first_seen_at, last_seen_at`;
+  submission_checked_at, first_seen_at, last_seen_at`;
 
 // ---------------------------------------------------------------- tasks
 
@@ -56,7 +56,7 @@ export function insertTaskStmt(db: D1Database, task: TaskRow): D1PreparedStateme
   return db
     .prepare(
       `INSERT INTO tasks (${TASK_COLUMNS})
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)`,
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)`,
     )
     .bind(
       task.id,
@@ -74,6 +74,7 @@ export function insertTaskStmt(db: D1Database, task: TaskRow): D1PreparedStateme
       task.snooze_until,
       task.tracked_sec,
       task.completed_at,
+      task.submission_checked_at,
       task.first_seen_at,
       task.last_seen_at,
     );
@@ -162,7 +163,10 @@ export async function listSubmissionCheckTargets(
       `SELECT ${TASK_COLUMNS} FROM tasks
        WHERE source = ?1 AND status IN ('open', 'in_progress')
          AND kind = 'assign' AND instance_id IS NOT NULL
-       ORDER BY due_at IS NULL, due_at ASC
+       -- 未検査を最優先し、次に最も長く見ていないものから回す。
+       -- 締切順だけで選ぶと 9 件目以降が永久に検査されない。
+       ORDER BY submission_checked_at IS NOT NULL, submission_checked_at ASC,
+                due_at IS NULL, due_at ASC
        LIMIT ?2`,
     )
     .bind(source, limit)
@@ -273,6 +277,18 @@ export async function trackedSecSince(db: D1Database, since: number): Promise<nu
     .bind(since)
     .first<{ total: number }>();
   return row?.total ?? 0;
+}
+
+/** 問い合わせた事実を残す。提出済みでなくても更新して次に回す。 */
+export function touchSubmissionCheckedStmt(
+  db: D1Database,
+  ids: string[],
+  now: number,
+): D1PreparedStatement {
+  const placeholders = ids.map((_, i) => `?${i + 2}`).join(", ");
+  return db
+    .prepare(`UPDATE tasks SET submission_checked_at = ?1 WHERE id IN (${placeholders})`)
+    .bind(now, ...ids);
 }
 
 export interface CourseTotal {

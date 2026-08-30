@@ -188,18 +188,33 @@ export function homeView(params: {
   return { type: "home", blocks };
 }
 
-/** 通知 DM。複数件でも必ず 1 通にまとめる（§6 バッチング）。 */
+/**
+ * 通知 DM。複数件でも必ず 1 通にまとめる（バッチング）。
+ *
+ * chat.postMessage は 50 ブロックまで。1 タスクが 2 ブロックを使うので、
+ * 件数をそのまま並べると学期中に上限を超えて送信自体が失敗する。
+ * 上限を超える分は件数だけ添えて App Home に誘導する。
+ */
 export function notificationBlocks(
   headline: string,
   tasks: TaskRow[],
   now: number,
   runningTaskId: string | null,
 ): AnyMessageBlock[] {
+  const shown = tasks.slice(0, CONFIG.maxTasksPerMessage);
+  const rest = tasks.length - shown.length;
+
   const blocks: AnyMessageBlock[] = [
     { type: "section", text: { type: "mrkdwn", text: headline } },
   ];
-  for (const t of tasks) {
+  for (const t of shown) {
     blocks.push(...taskBlocks(t, now, t.id === runningTaskId));
+  }
+  if (rest > 0) {
+    blocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `ほか ${rest} 件。全体はアプリのホームタブで確認できます。` }],
+    });
   }
   return blocks;
 }

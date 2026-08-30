@@ -9,10 +9,10 @@ import {
 import * as repo from "./db/repo";
 import { MoodleAuthError, createMoodleClient } from "./moodle";
 import {
+  maybeSendDigest,
   maybeSendWeeklySummary,
   notifyTokenExpired,
   runNotifications,
-  sendDigest,
 } from "./sync/notify";
 import { syncMoodle, syncSubmissions } from "./sync/reconcile";
 import { createSlackApp } from "./slack/app";
@@ -24,7 +24,6 @@ import { nowSec, setTimezoneOffsetMin } from "./time";
 const CRON = {
   sync: "*/15 * * * *",
   tracking: "*/5 * * * *",
-  digest: "0 22 * * *",
 } as const;
 
 export default {
@@ -71,9 +70,6 @@ export default {
       case CRON.tracking:
         ctx.waitUntil(runTrackingSync(env, client, now));
         return;
-      case CRON.digest:
-        ctx.waitUntil(runDigest(env, client, now));
-        return;
       default:
         // 未知の cron は同期として扱っておく（wrangler.toml を触ったときの保険）
         ctx.waitUntil(runSync(env, client, now));
@@ -88,6 +84,7 @@ async function runSync(env: Env, client: SlackAPIClient, now: number): Promise<v
     const outcome = await syncMoodle(env.DB, moodle, now);
     await syncSubmissions(env.DB, moodle, now);
     await runNotifications(env, client, now, outcome.inserted);
+    await maybeSendDigest(env, client, now);
     await maybeSendWeeklySummary(env, client, now);
     await publishHome(env, client, now);
   } catch (e) {
@@ -109,15 +106,5 @@ async function runTrackingSync(env: Env, client: SlackAPIClient, now: number): P
     await publishHome(env, client, now);
   } catch (e) {
     console.error("tracking sync failed", e);
-  }
-}
-
-/** 毎朝 7:00 JST: 3 日以内の課題を 1 通にまとめて送る。 */
-async function runDigest(env: Env, client: SlackAPIClient, now: number): Promise<void> {
-  try {
-    await sendDigest(env, client, now);
-    await publishHome(env, client, now);
-  } catch (e) {
-    console.error("digest failed", e);
   }
 }

@@ -11,10 +11,10 @@ Moodle には Webhook が無く、イベントを push してもらえない。�
 ```
                 Cloudflare Workers（無料枠）
   ┌────────────────────────────────────────────┐
-  │ scheduled()  ← Cron Triggers ×3            │
-  │   */15  同期 + リマインド + 週次サマリ        │
+  │ scheduled()  ← Cron Triggers ×2            │
+  │   */15  同期 + リマインド + ダイジェスト        │
+  │         + 週次サマリ                         │
   │   */5   Toggl の計測状態を App Home に反映    │
-  │   0 22  朝のダイジェスト（= JST 07:00）       │
   │                                            │
   │ fetch()      ← Slack Interactivity / Events│
   │   ボタン操作・App Home・署名検証              │
@@ -49,8 +49,9 @@ Moodle には Webhook が無く、イベントを push してもらえない。�
 - **CPU 10ms / 呼び出し** — fetch の待ち時間は CPU 時間に含まれない。科目ごとにループして重い処理を積み上げず、カレンダー API 1 回で全件取得する
 - **Slack は 3 秒以内に 200** — lazy listener で「即 ack → 後追いで処理」
 - **Socket Mode 不可** — HTTP モード。Request URL は `/slack/events` に固定
-- **Cron は UTC 固定** — ローカル時刻の変換は `src/time.ts` にだけ閉じ込める
-- **Cron 3 本まで** — 週次サマリは新設せず、15 分同期に相乗りさせる
+- **Cron は UTC 固定** — 発火時刻を cron に埋めるとタイムゾーンを変えた人が cron も直す羽目になる。ダイジェストと週次サマリはローカル時刻で判定し、送信済みかは `kv_state` で管理する（取りこぼしても次の tick で送られ、二重送信もしない）
+- **Cron 3 本まで** — ダイジェストと週次サマリは新設せず、15 分同期に相乗りさせる
+- **Slack のメッセージは 50 ブロックまで** — 1 タスクが 2 ブロックを使うため、1 通に並べるのは 12 件まで。溢れた分は件数だけ添えて App Home に誘導する
 
 ---
 
@@ -99,6 +100,7 @@ Moodle には Webhook が無く、イベントを push してもらえない。�
 | `tasks` | Moodle 由来のタスク。`(source, source_id)` で一意 |
 | `notifications` | 送信済みの記録。`(task_id, kind)` が PRIMARY KEY で冪等性の要 |
 | `time_sessions` | 計測の開始・停止。**時間データの正はここ**で、Toggl はその鏡 |
+| — | `tasks.submission_checked_at` は提出状況を最後に問い合わせた時刻。検査対象の回転に使う |
 | `course_project_map` | 科目 ⇄ Toggl プロジェクトの対応 |
 | `kv_state` | `last_sync_at` などの雑多な状態 |
 
@@ -127,6 +129,7 @@ Moodle には Webhook が無く、イベントを push してもらえない。�
 - 変化が無かったものも含め、「今回見えた」印は 1 文で更新する
 - 締切 +24h 経過 → `archived`
 - 提出済み判定（WS のみ、1 時間に 1 回・8 件まで）→ `done`
+  - 1 件 1 リクエストなので件数を絞る。締切順だけで選ぶと 9 件目以降が永久に検査されないため、`submission_checked_at` を持たせて「未検査 → 最も長く見ていないもの」の順で回す
 
 **消滅検出の条件**
 

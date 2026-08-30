@@ -146,16 +146,20 @@ export async function syncSubmissions(
   const bySourceId = new Map(candidates.map((t) => [t.source_id, t]));
 
   const statements: D1PreparedStatement[] = [];
+  let submitted = 0;
   for (const r of results) {
     if (!r.submitted) continue;
     const task = bySourceId.get(r.sourceId);
     if (!task) continue;
     statements.push(repo.markSubmittedStmt(db, task.id, r.submittedAt ?? now));
+    submitted++;
   }
+  // 提出済みでなくても「見た」印は付ける。付けないと同じ課題ばかり検査してしまう。
+  statements.push(repo.touchSubmissionCheckedStmt(db, candidates.map((t) => t.id), now));
   statements.push(repo.setStateStmt(db, "last_submission_check_at", String(now)));
   await db.batch(statements);
 
-  return statements.length - 1;
+  return submitted;
 }
 
 function toTaskRow(item: RawMoodleTask, source: string, now: number): TaskRow {
@@ -175,6 +179,7 @@ function toTaskRow(item: RawMoodleTask, source: string, now: number): TaskRow {
     snooze_until: null,
     tracked_sec: 0,
     completed_at: null,
+    submission_checked_at: null,
     first_seen_at: now,
     last_seen_at: now,
   };

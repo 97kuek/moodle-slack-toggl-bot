@@ -9,6 +9,7 @@ import {
   isQuietHour,
   local,
   localDayOffset,
+  startOfLocalDay,
   startOfLocalWeek,
 } from "../time";
 
@@ -106,17 +107,30 @@ export async function runNotifications(
   return sent;
 }
 
-/** 毎朝 7:00 JST。今日から 3 日以内の課題を 1 通にまとめる。 */
-export async function sendDigest(
+/**
+ * 朝のダイジェスト。今日から 3 日以内の課題を 1 通にまとめる。
+ *
+ * 発火時刻の判定を cron ではなくローカル時刻で行う。cron は UTC 固定なので、
+ * そこに時刻を埋めると TIMEZONE_OFFSET_MIN を変えた人が cron も直す必要が出る。
+ * 15 分ごとの同期に相乗りさせ、送信済みかどうかは kv_state で管理する。
+ */
+export async function maybeSendDigest(
   env: Env,
   client: SlackAPIClient,
   now: number,
 ): Promise<boolean> {
   const db = env.DB;
+
+  const target = startOfLocalDay(now) + CONFIG.digestHour * 3600;
+  if (now < target) return false;
+  const last = await repo.getStateNumber(db, "last_digest_at");
+  if (last !== null && last >= target) return false;
+
   const active = await repo.listActiveTasks(db, CONFIG.maxTasksOnHome);
   const soon = active.filter(
     (t) => t.due_at !== null && localDayOffset(t.due_at, now) <= 3,
   );
+  await repo.setState(db, "last_digest_at", String(now));
   if (soon.length === 0) return false;
 
   const running = await repo.getRunningSession(db);

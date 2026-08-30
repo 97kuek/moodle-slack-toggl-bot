@@ -55,8 +55,17 @@ export const CONFIG = {
   weeklySummaryWeekday: 0,
   weeklySummaryHour: 21,
 
-  /** App Home に出すタスクの上限（Block Kit のブロック数制限対策） */
+  /** App Home に出すタスクの上限（view は 100 ブロックまで） */
   maxTasksOnHome: 25,
+  /**
+   * 1 通の DM にボタン付きで並べるタスクの上限。
+   * chat.postMessage は 50 ブロックまでで、1 タスク = 2 ブロック消費する。
+   * 溢れた分は件数だけ添えて App Home に誘導する。
+   */
+  maxTasksPerMessage: 12,
+
+  /** 朝のダイジェストを送る時刻 */
+  digestHour: 7,
 } as const;
 
 export const SOURCE_BY_MODE = {
