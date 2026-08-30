@@ -1,0 +1,210 @@
+import type { AnyHomeTabBlock, AnyMessageBlock } from "slack-cloudflare-workers";
+import { CONFIG } from "../config";
+import type { TaskRow } from "../db/types";
+import {
+  GROUP_ORDER,
+  dueGroupLabel,
+  formatDue,
+  formatDuration,
+  formatRemaining,
+} from "../time";
+
+export const ACTION = {
+  start: "task_start",
+  stop: "task_stop",
+  done: "task_done",
+  snooze: "task_snooze",
+  sync: "sync_now",
+} as const;
+
+const KIND_ICON: Record<string, string> = {
+  assign: "📝",
+  quiz: "🧪",
+  event: "📅",
+};
+
+/** 1 件のタスクを、見出し + 操作ボタンの 2 ブロックにする。 */
+export function taskBlocks(task: TaskRow, now: number, isRunning: boolean): AnyMessageBlock[] {
+  const icon = KIND_ICON[task.kind ?? "event"] ?? "📅";
+  const course = task.course_name ? `*${escapeMrkdwn(task.course_name)}* / ` : "";
+  const due =
+    task.due_at === null
+      ? "期限なし"
+      : `${formatDue(task.due_at, now)} — ${formatRemaining(task.due_at, now)}`;
+
+  const marks: string[] = [];
+  if (isRunning) marks.push("🔴 計測中");
+  else if (task.tracked_sec >= CONFIG.startedThresholdSec) {
+    marks.push(`着手済み ${formatDuration(task.tracked_sec)}`);
+  }
+  if (task.snooze_until !== null && task.snooze_until > now) marks.push("😴 スヌーズ中");
+
+  const meta = [due, ...marks].join(" · ");
+
+  const buttons: AnyMessageBlock = {
+    type: "actions",
+    block_id: `task_actions_${task.id}`,
+    elements: [
+      isRunning
+        ? {
+            type: "button",
+            action_id: ACTION.stop,
+            text: { type: "plain_text", text: "⏹ 停止", emoji: true },
+            value: task.id,
+            style: "danger",
+          }
+        : {
+            type: "button",
+            action_id: ACTION.start,
+            text: { type: "plain_text", text: "▶︎ 開始", emoji: true },
+            value: task.id,
+            style: "primary",
+          },
+      {
+        type: "button",
+        action_id: ACTION.done,
+        text: { type: "plain_text", text: "✓ 完了", emoji: true },
+        value: task.id,
+      },
+      {
+        type: "button",
+        action_id: ACTION.snooze,
+        text: { type: "plain_text", text: "😴 明日", emoji: true },
+        value: task.id,
+      },
+      ...(task.url
+        ? [
+            {
+              type: "button" as const,
+              action_id: `open_moodle_${task.id}`,
+              text: { type: "plain_text" as const, text: "🔗 Moodle", emoji: true },
+              url: task.url,
+            },
+          ]
+        : []),
+    ],
+  };
+
+  return [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: `${icon} ${course}${escapeMrkdwn(task.title)}\n\`${meta}\`` },
+    },
+    buttons,
+  ];
+}
+
+/** App Home。締切順に、JST の日付でグルーピングする。 */
+export function homeView(params: {
+  tasks: TaskRow[];
+  now: number;
+  runningTaskId: string | null;
+  runningTitle: string | null;
+  runningSince: number | null;
+  todayTrackedSec: number;
+  lastSyncAt: number | null;
+  warning: string | null;
+}): { type: "home"; blocks: AnyHomeTabBlock[] } {
+  const { tasks, now, runningTaskId } = params;
+  const blocks: AnyHomeTabBlock[] = [];
+
+  // --- 上部: 今日の実績と計測中
+  const runningLine =
+    params.runningTaskId && params.runningTitle
+      ? `🔴 *計測中* — ${escapeMrkdwn(params.runningTitle)}　\`${formatDuration(
+          now - (params.runningSince ?? now),
+        )}\``
+      : "⏸ 計測していません";
+
+  blocks.push({
+    type: "section",
+    text: {
+      type: "mrkdwn",
+      text: `*📚 今日の学習*　\`${formatDuration(params.todayTrackedSec)}\`\n${runningLine}`,
+    },
+  });
+
+  if (params.warning) {
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `:warning: ${params.warning}` },
+    });
+  }
+
+  blocks.push({ type: "divider" });
+
+  if (tasks.length === 0) {
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: "対応が必要な課題はありません。" },
+    });
+  } else {
+    const groups = new Map<string, TaskRow[]>();
+    for (const t of tasks) {
+      const label = dueGroupLabel(t.due_at, now);
+      const list = groups.get(label);
+      if (list) list.push(t);
+      else groups.set(label, [t]);
+    }
+
+    for (const label of GROUP_ORDER) {
+      const list = groups.get(label);
+      if (!list || list.length === 0) continue;
+      blocks.push({
+        type: "header",
+        text: { type: "plain_text", text: `${label}（${list.length}）`, emoji: true },
+      });
+      for (const t of list) {
+        blocks.push(...(taskBlocks(t, now, t.id === runningTaskId) as AnyHomeTabBlock[]));
+      }
+    }
+  }
+
+  blocks.push({ type: "divider" });
+  blocks.push({
+    type: "actions",
+    elements: [
+      {
+        type: "button",
+        action_id: ACTION.sync,
+        text: { type: "plain_text", text: "🔄 今すぐ同期", emoji: true },
+        value: "sync",
+      },
+    ],
+  });
+  blocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text:
+          params.lastSyncAt === null
+            ? "まだ同期していません"
+            : `最終同期: ${formatDuration(now - params.lastSyncAt)}前`,
+      },
+    ],
+  });
+
+  return { type: "home", blocks };
+}
+
+/** 通知 DM。複数件でも必ず 1 通にまとめる（§6 バッチング）。 */
+export function notificationBlocks(
+  headline: string,
+  tasks: TaskRow[],
+  now: number,
+  runningTaskId: string | null,
+): AnyMessageBlock[] {
+  const blocks: AnyMessageBlock[] = [
+    { type: "section", text: { type: "mrkdwn", text: headline } },
+  ];
+  for (const t of tasks) {
+    blocks.push(...taskBlocks(t, now, t.id === runningTaskId));
+  }
+  return blocks;
+}
+
+/** Slack の mrkdwn で意味を持つ文字を無効化する。 */
+export function escapeMrkdwn(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}

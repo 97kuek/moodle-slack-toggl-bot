@@ -1,0 +1,17 @@
+# cp .dev.vars.example .dev.vars （ローカル開発用。.gitignore 済み）
+# 本番は npx wrangler secret put <NAME> で登録する。
+
+# Moodle: MOODLE_MODE=ws なら MOODLE_TOKEN、ical なら MOODLE_ICAL_URL
+MOODLE_TOKEN=
+MOODLE_ICAL_URL=
+
+# Slack アプリの Basic Information / OAuth & Permissions から
+SLACK_SIGNING_SECRET=
+SLACK_BOT_TOKEN=xoxb-
+# DM の宛先＝自分の Slack ユーザー ID（プロフィール > その他 > メンバー ID をコピー）
+SLACK_USER_ID=U0000000000
+
+# Toggl Track: https://track.toggl.com/profile の API Token
+TOGGL_API_TOKEN=
+# 省略時は /me の default_workspace_id を使う
+TOGGL_WORKSPACE_ID=

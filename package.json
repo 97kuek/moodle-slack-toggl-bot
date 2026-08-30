@@ -1,0 +1,29 @@
+{
+  "name": "moodle-slack-toggl-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Moodle の課題を Slack の TODO にして、そのまま Toggl Track で時間計測する個人用ボット",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "db:migrate:local": "wrangler d1 migrations apply moodle_bot --local",
+    "db:migrate": "wrangler d1 migrations apply moodle_bot --remote",
+    "tail": "wrangler tail",
+    "parse:ics": "esbuild scripts/parse-ics.ts --bundle --platform=node --format=esm --outfile=.wrangler/parse-ics.mjs --log-level=warning && node .wrangler/parse-ics.mjs"
+  },
+  "dependencies": {
+    "slack-cloudflare-workers": "^1.3.10"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260830.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.127.1",
+    "esbuild": "^0.28.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260828.1": true
+  }
+}
