@@ -291,6 +291,31 @@ export function touchSubmissionCheckedStmt(
     .bind(now, ...ids);
 }
 
+/** 直近に完了したタスク。押し間違いを戻せるように App Home に出す。 */
+export async function listRecentlyCompleted(
+  db: D1Database,
+  since: number,
+  limit: number,
+): Promise<TaskRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT ${TASK_COLUMNS} FROM tasks
+       WHERE status = 'done' AND completed_at IS NOT NULL AND completed_at >= ?1
+       ORDER BY completed_at DESC LIMIT ?2`,
+    )
+    .bind(since, limit)
+    .all<TaskRow>();
+  return res.results ?? [];
+}
+
+/** 完了を取り消す。Moodle からは再取得されないので、これが唯一の復旧手段。 */
+export async function markUndone(db: D1Database, id: string): Promise<void> {
+  await db
+    .prepare(`UPDATE tasks SET status = 'open', completed_at = NULL WHERE id = ?1`)
+    .bind(id)
+    .run();
+}
+
 export interface CourseTotal {
   course: string | null;
   sec: number;

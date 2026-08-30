@@ -12,8 +12,9 @@ export async function publishHome(
   warning: string | null = null,
 ): Promise<void> {
   const db = env.DB;
-  const [tasks, running, todayTrackedSec, lastSyncAt] = await Promise.all([
+  const [tasks, recentlyCompleted, running, todayTrackedSec, lastSyncAt] = await Promise.all([
     repo.listActiveTasks(db, CONFIG.maxTasksOnHome),
+    repo.listRecentlyCompleted(db, now - 24 * 60 * 60, CONFIG.maxRecentlyCompletedOnHome),
     repo.getRunningSession(db),
     repo.trackedSecSince(db, startOfLocalDay(now)),
     repo.getStateNumber(db, "last_sync_at"),
@@ -23,6 +24,7 @@ export async function publishHome(
 
   const view = homeView({
     tasks,
+    recentlyCompleted,
     now,
     runningTaskId: running?.task_id ?? null,
     runningTitle: runningTask?.title ?? null,

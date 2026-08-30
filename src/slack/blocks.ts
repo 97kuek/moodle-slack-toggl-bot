@@ -14,6 +14,7 @@ export const ACTION = {
   stop: "task_stop",
   done: "task_done",
   snooze: "task_snooze",
+  undone: "task_undone",
   sync: "sync_now",
 } as const;
 
@@ -97,6 +98,7 @@ export function taskBlocks(task: TaskRow, now: number, isRunning: boolean): AnyM
 /** App Home。締切順に、JST の日付でグルーピングする。 */
 export function homeView(params: {
   tasks: TaskRow[];
+  recentlyCompleted: TaskRow[];
   now: number;
   runningTaskId: string | null;
   runningTitle: string | null;
@@ -157,6 +159,27 @@ export function homeView(params: {
       for (const t of list) {
         blocks.push(...(taskBlocks(t, now, t.id === runningTaskId) as AnyHomeTabBlock[]));
       }
+    }
+  }
+
+  // 完了は Moodle から再取得されないため、押し間違いを戻せる導線をここに置く。
+  if (params.recentlyCompleted.length > 0) {
+    blocks.push({ type: "divider" });
+    blocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: "*最近完了したもの*（24時間以内）" }],
+    });
+    for (const t of params.recentlyCompleted) {
+      blocks.push({
+        type: "section",
+        text: { type: "mrkdwn", text: `~${escapeMrkdwn(t.title)}~` },
+        accessory: {
+          type: "button",
+          action_id: ACTION.undone,
+          text: { type: "plain_text", text: "↩︎ 戻す", emoji: true },
+          value: t.id,
+        },
+      });
     }
   }
 

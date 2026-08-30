@@ -106,12 +106,26 @@ export async function reconcileRunningEntry(env: Env): Promise<boolean> {
   const running = await repo.getRunningSession(env.DB);
   if (!running) return false;
 
-  const current = await createTogglClient(env).getCurrentEntry();
+  const toggl = createTogglClient(env);
+  const current = await toggl.getCurrentEntry();
   if (current && current.id === running.toggl_entry_id) return false;
 
+  // Toggl 側で止められていた場合、検知した時刻で閉じると最大 5 分ぶん水増しになる。
+  // 実際の停止時刻を問い合わせて、取れたらそれを使う。
   const now = nowSec();
-  const duration = Math.max(0, now - running.started_at);
-  await repo.stopSession(env.DB, running.id, now, duration);
+  let stoppedAt = now;
+  if (running.toggl_entry_id !== null) {
+    try {
+      const entry = await toggl.getEntry(running.toggl_entry_id);
+      const stop = entry?.stop ? Math.floor(Date.parse(entry.stop) / 1000) : NaN;
+      if (Number.isFinite(stop) && stop >= running.started_at && stop <= now) stoppedAt = stop;
+    } catch {
+      // 取れなければ検知時刻で閉じる。計測が開いたままになるよりはよい。
+    }
+  }
+
+  const duration = Math.max(0, stoppedAt - running.started_at);
+  await repo.stopSession(env.DB, running.id, stoppedAt, duration);
   await repo.addTrackedSec(env.DB, running.task_id, duration);
   const task = await repo.getTask(env.DB, running.task_id);
   if (task?.status === "in_progress") {

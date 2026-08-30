@@ -58,6 +58,17 @@ export function createSlackApp(env: Env): SlackApp<Env> {
   );
 
   app.action(
+    { type: "button", action_id: ACTION.undone },
+    async () => {},
+    async ({ context, payload }) => {
+      const taskId = buttonValue(payload);
+      if (!taskId) return;
+      await repo.markUndone(env.DB, taskId);
+      await publishHome(env, context.client, nowSec());
+    },
+  );
+
+  app.action(
     { type: "button", action_id: ACTION.snooze },
     async () => {},
     async ({ context, payload }) => {

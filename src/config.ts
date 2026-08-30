@@ -66,6 +66,9 @@ export const CONFIG = {
 
   /** 朝のダイジェストを送る時刻 */
   digestHour: 7,
+
+  /** App Home の「最近完了したもの」に出す件数（押し間違いの復旧用） */
+  maxRecentlyCompletedOnHome: 5,
 } as const;
 
 export const SOURCE_BY_MODE = {

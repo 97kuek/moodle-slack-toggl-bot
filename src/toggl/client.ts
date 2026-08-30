@@ -85,6 +85,12 @@ export class TogglClient {
     return await this.call<TogglTimeEntry>("/me/time_entries/current");
   }
 
+  /** 1 件の entry を取得する。Toggl 側で止められた実際の停止時刻を知るために使う。 */
+  async getEntry(entryId: number, workspaceId?: number): Promise<TogglTimeEntry | null> {
+    const wid = workspaceId ?? (await this.getWorkspaceId());
+    return await this.call<TogglTimeEntry>(`/workspaces/${wid}/time_entries/${entryId}`);
+  }
+
   /** 走っている entry があれば止めてから、新しい計測を開始する。 */
   async startEntry(params: {
     description: string;
