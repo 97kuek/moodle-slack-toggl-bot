@@ -30,6 +30,12 @@ export interface TimeTracker {
   stop(entryId: string, at: number): Promise<void>;
   /** 科目・分類名からプロジェクトを引く。無ければ作る。対応しない場合は null。 */
   findOrCreateProject(name: string): Promise<string | null>;
+  /**
+   * 計測が実際に止められた時刻。
+   * 計測側で手動停止された場合、検知した時刻で閉じると最大 5 分ぶん水増しになる。
+   * 取得できない実装・状況では null を返し、呼び出し側が検知時刻で代用する。
+   */
+  getStoppedAt(entryId: string): Promise<number | null>;
 }
 
 export class TrackerAuthError extends Error {

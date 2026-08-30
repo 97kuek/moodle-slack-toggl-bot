@@ -140,6 +140,11 @@ export class TogglFocusClient implements TimeTracker {
     });
   }
 
+  async getStoppedAt(entryId: string): Promise<number | null> {
+    const e = await this.call<FocusTimeEntry>(`${await this.scope()}/time-entries/${entryId}`);
+    return e?.end ? Math.floor(Date.parse(e.end) / 1000) : null;
+  }
+
   async findOrCreateProject(name: string): Promise<string | null> {
     const scope = await this.scope();
     const list = await this.call<{ data?: FocusProject[] } | FocusProject[]>(`${scope}/projects`);

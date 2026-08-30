@@ -84,6 +84,12 @@ export function isQuietHour(epochSec: number, startHour: number, endHour: number
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
+/** "20:40"。時刻だけを返す。 */
+export function formatClock(epochSec: number): string {
+  const d = local(epochSec);
+  return `${pad(d.hour)}:${pad(d.minute)}`;
+}
+
 /** "9/2 17:00"。今日なら "17:00" だけにする。 */
 export function formatDue(epochSec: number, now: number): string {
   const d = local(epochSec);

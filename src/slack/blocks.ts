@@ -2,6 +2,7 @@ import type { AnyHomeTabBlock, AnyMessageBlock } from "slack-cloudflare-workers"
 import { CONFIG } from "../config";
 import type { TaskRow } from "../db/types";
 import {
+  formatClock,
   GROUP_ORDER,
   dueGroupLabel,
   formatDue,
@@ -127,11 +128,12 @@ export function homeView(params: {
   const blocks: AnyHomeTabBlock[] = [];
 
   // --- 上部: 今日の実績と計測中
+  // Slack のブロックは静的なので、経過時間は描画時点のスナップショットになる。
+  // 開始時刻を併記して、数字が止まって見えても意味が取れるようにする。
   const runningLine =
-    params.runningTaskId && params.runningTitle
-      ? `🔴 *計測中* — ${escapeMrkdwn(params.runningTitle)}　\`${formatDuration(
-          now - (params.runningSince ?? now),
-        )}\``
+    params.runningTaskId && params.runningTitle && params.runningSince !== null
+      ? `🔴 *計測中* — ${escapeMrkdwn(params.runningTitle)}\n` +
+        `　　${formatClock(params.runningSince)} 開始 · ${formatDuration(now - params.runningSince)} 経過`
       : "⏸ 計測していません";
 
   blocks.push({

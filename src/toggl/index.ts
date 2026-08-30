@@ -49,6 +49,11 @@ class TogglTrackAdapter implements TimeTracker {
   async findOrCreateProject(name: string): Promise<string | null> {
     return String(await this.client.findOrCreateProject(name));
   }
+
+  async getStoppedAt(entryId: string): Promise<number | null> {
+    const e = await this.client.getEntry(Number(entryId));
+    return e?.stop ? Math.floor(Date.parse(e.stop) / 1000) : null;
+  }
 }
 
 /**

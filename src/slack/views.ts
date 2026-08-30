@@ -76,57 +76,57 @@ const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"].map((d, i) =>
   value: String(i),
 }));
 
+const NOTIFY_NEW_OPTION = {
+  text: { type: "plain_text" as const, text: "検出したらすぐ通知する", emoji: true },
+  value: "1",
+};
+
+function header(text: string): AnyModalBlock {
+  return { type: "header", text: { type: "plain_text", text, emoji: true } };
+}
+
+function note(text: string): AnyModalBlock {
+  return { type: "context", elements: [{ type: "mrkdwn", text }] };
+}
+
+/**
+ * 接続設定。
+ *
+ * 入力欄はできるだけ減らしてある。
+ *   - 取得方式は選ばせず、入力された値が URL かトークンかで判別する
+ *   - Toggl の組織 ID は数字を探させず、ブラウザの URL をそのまま貼れるようにする
+ *   - ワークスペース ID は API から取れるので画面に出さない
+ */
 export function connectionModal(s: Settings): ModalView {
+  const set = (v: string | null) => (v ? "設定済み" : "未設定");
+
   const blocks: AnyModalBlock[] = [
-    {
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: "トークンなどの欄は*空のままにすると変更されません*。変えたいときだけ入力してください。",
-        },
-      ],
-    },
+    header("Moodle"),
+    note("課題を自動で取り込みます。使わない場合は空のままで構いません。"),
     text("moodle_base_url", "Moodle の URL", {
+      optional: true,
       initial: s.moodleBaseUrl,
       placeholder: "https://moodle.example.ac.jp",
-      hint: "末尾のスラッシュは不要",
     }),
-    select(
-      "moodle_mode",
-      "取得方式",
-      [
-        { text: "iCal（カレンダーエクスポート）", value: "ical" },
-        { text: "Web Services（提出済みの自動判定つき）", value: "ws" },
-      ],
-      s.moodleMode,
-      "SSO でトークンが取れない場合は iCal を選ぶ",
-    ),
-    text("moodle_ical_url", "Moodle の iCal URL", {
+    text("moodle_credential", "iCal の URL、またはトークン", {
       optional: true,
-      placeholder: s.moodleIcalUrl ? "設定済み（変更する場合のみ入力）" : "未設定",
-      hint: "Moodle のカレンダー →「カレンダーをエクスポートする」で発行",
+      placeholder: `${set(s.moodleIcalUrl ?? s.moodleToken)}（変更する場合のみ入力）`,
+      hint: "https… なら iCal、それ以外はトークンとして扱います",
     }),
-    text("moodle_token", "Moodle の Web Services トークン", {
-      optional: true,
-      placeholder: s.moodleToken ? "設定済み（変更する場合のみ入力）" : "未設定",
-      hint: "ブラウザでログイン → /user/managetoken.php",
-    }),
+
     { type: "divider" },
-    text("toggl_api_token", "Toggl の API トークン", {
+    header("Toggl"),
+    note("時間計測に使います。未設定でも通知とタスク管理は動きます。"),
+    text("toggl_api_token", "API トークン", {
       optional: true,
-      placeholder: s.togglApiToken ? "設定済み（変更する場合のみ入力）" : "未設定",
-      hint: "https://track.toggl.com/profile の最下部。未設定でも通知と TODO は動く",
+      placeholder: `${set(s.togglApiToken)}（変更する場合のみ入力）`,
+      hint: "track.toggl.com のプロフィール設定の最下部",
     }),
-    text("toggl_organization_id", "Toggl の組織 ID", {
+    text("toggl_org", "Toggl の URL", {
       optional: true,
       initial: s.togglOrganizationId,
-      hint: "Toggl 2.0（toggl_sk_ で始まるトークン）の場合のみ必要。ブラウザの URL に含まれる数字",
-    }),
-    text("toggl_workspace_id", "Toggl のワークスペース ID", {
-      optional: true,
-      initial: s.togglWorkspaceId,
-      hint: "空なら既定のワークスペースを自動で使う",
+      placeholder: "focus.toggl.com/12345678/workspaces/…",
+      hint: "toggl_sk_ で始まるトークンのときだけ必要。URL をそのまま貼れば大丈夫です",
     }),
   ];
 
@@ -140,13 +140,16 @@ export function connectionModal(s: Settings): ModalView {
   };
 }
 
+/** 通知設定。項目を意味の塊に分けて、それぞれ何のための設定かを添える。 */
 export function notificationModal(s: Settings): ModalView {
   const blocks: AnyModalBlock[] = [
     text("timezone_offset_min", "タイムゾーン（UTC からの分）", {
       initial: String(s.timezoneOffsetMin),
-      hint: "540 = 日本。表示と通知時刻の判定に使う",
+      hint: "540 = 日本。以下の時刻はすべてこれを基準にします",
     }),
+
     { type: "divider" },
+    header("締切のリマインド"),
     {
       type: "input",
       block_id: "notify_new",
@@ -155,36 +158,26 @@ export function notificationModal(s: Settings): ModalView {
       element: {
         type: "checkboxes",
         action_id: "value",
-        options: [
-          {
-            text: { type: "plain_text", text: "検出したらすぐ通知する", emoji: true },
-            value: "1",
-          },
-        ],
-        ...(s.notifyNew
-          ? {
-              initial_options: [
-                {
-                  text: { type: "plain_text" as const, text: "検出したらすぐ通知する", emoji: true },
-                  value: "1",
-                },
-              ],
-            }
-          : {}),
+        options: [NOTIFY_NEW_OPTION],
+        ...(s.notifyNew ? { initial_options: [NOTIFY_NEW_OPTION] } : {}),
       },
     },
-    select("due_tomorrow_hour", "「明日締切」を送る時刻", HOURS, String(s.dueTomorrowHour)),
+    select("due_tomorrow_hour", "前日に知らせる時刻", HOURS, String(s.dueTomorrowHour)),
     text("due_soon_hours", "締切の何時間前に最終通知するか", {
       initial: String(s.dueSoonHours),
-      hint: "1〜48 の数字",
+      hint: "1〜48。これだけはスヌーズ中でも届きます",
     }),
+
     { type: "divider" },
-    select("digest_hour", "朝のダイジェストの時刻", HOURS, String(s.digestHour)),
+    header("まとめて届くもの"),
+    select("digest_hour", "朝のダイジェスト", HOURS, String(s.digestHour), "3日以内の締切を 1 通にまとめます"),
     select("weekly_summary_weekday", "週次サマリの曜日", WEEKDAYS, String(s.weeklySummaryWeekday)),
-    select("weekly_summary_hour", "週次サマリの時刻", HOURS, String(s.weeklySummaryHour)),
+    select("weekly_summary_hour", "週次サマリの時刻", HOURS, String(s.weeklySummaryHour), "分類別の学習時間・完了したタスク・来週の締切"),
+
     { type: "divider" },
-    select("quiet_start_hour", "静音時間の開始", HOURS, String(s.quietStartHour)),
-    select("quiet_end_hour", "静音時間の終了", HOURS, String(s.quietEndHour), "この間の通知は朝のダイジェストに合流する"),
+    header("静かにする時間"),
+    select("quiet_start_hour", "開始", HOURS, String(s.quietStartHour)),
+    select("quiet_end_hour", "終了", HOURS, String(s.quietEndHour), "この間の通知は朝のダイジェストに合流します"),
   ];
 
   return {

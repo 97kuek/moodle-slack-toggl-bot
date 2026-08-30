@@ -1,5 +1,4 @@
 import type { SlackEdgeAppEnv } from "slack-cloudflare-workers";
-import { DEFAULT_TZ_OFFSET_MIN } from "./time";
 
 /** wrangler.toml の [vars] と wrangler secret で注入される値。 */
 export type Env = SlackEdgeAppEnv & {
@@ -25,7 +24,10 @@ export type Env = SlackEdgeAppEnv & {
 };
 
 /**
- * 挙動を決める定数。ここを触れば通知の量と同期の重さが変わる。
+ * 画面に出さない調整値の既定。
+ *
+ * 利用者が触る設定は Slack から変更でき、D1 に入る（src/settings.ts）。
+ * ここにあるのは、その既定値と、設定画面に出すほどではない内部の上限。
  */
 export const CONFIG = {
   /** 何日先までの課題を取り込むか */
@@ -83,36 +85,3 @@ export const SOURCE_BY_MODE = {
   ws: "moodle_ws",
   ical: "moodle_ical",
 } as const;
-
-/** 未設定の必須項目を返す。/health の自己診断にも使う。 */
-/** 表示タイムゾーンの解決。未設定・不正な値なら JST にフォールバックする。 */
-export function resolveTimezoneOffsetMin(env: Env): number {
-  const raw = Number(env.TIMEZONE_OFFSET_MIN);
-  return Number.isFinite(raw) && Math.abs(raw) <= 14 * 60 ? raw : DEFAULT_TZ_OFFSET_MIN;
-}
-
-export function missingConfig(env: Env): string[] {
-  const missing: string[] = [];
-  if (!env.MOODLE_BASE_URL) missing.push("MOODLE_BASE_URL");
-  if (env.MOODLE_MODE === "ws" && !env.MOODLE_TOKEN) missing.push("MOODLE_TOKEN");
-  if (env.MOODLE_MODE === "ical" && !env.MOODLE_ICAL_URL) missing.push("MOODLE_ICAL_URL");
-  if (!env.SLACK_BOT_TOKEN) missing.push("SLACK_BOT_TOKEN");
-  if (!env.SLACK_USER_ID) missing.push("SLACK_USER_ID");
-  // TOGGL_API_TOKEN は必須にしない。時間計測が未設定でも
-  // Moodle の同期・通知・TODO は動くべきなので、ここで止めない。
-  return missing;
-}
-
-export function assertEnv(env: Env): void {
-  const missing = missingConfig(env);
-  if (missing.length > 0) {
-    throw new Error(
-      `設定が足りません: ${missing.join(", ")} — .dev.vars か wrangler secret put で登録してください`,
-    );
-  }
-}
-
-/** 時間計測が使える状態か。未設定なら Toggl に触れる処理をすべて飛ばす。 */
-export function isTogglConfigured(env: Env): boolean {
-  return typeof env.TOGGL_API_TOKEN === "string" && env.TOGGL_API_TOKEN.length > 0;
-}

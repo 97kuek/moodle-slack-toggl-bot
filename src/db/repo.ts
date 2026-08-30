@@ -231,12 +231,19 @@ export function clearDueNotificationsStmt(db: D1Database, taskId: string): D1Pre
 // --------------------------------------------------------- time_sessions
 
 export async function getRunningSession(db: D1Database): Promise<TimeSessionRow | null> {
-  return await db
+  const row = await db
     .prepare(
       `SELECT id, task_id, toggl_entry_id, started_at, stopped_at, duration_sec
        FROM time_sessions WHERE stopped_at IS NULL ORDER BY started_at DESC LIMIT 1`,
     )
-    .first<TimeSessionRow>();
+    .first<TimeSessionRow & { toggl_entry_id: string | number | null }>();
+  if (!row) return null;
+  // 列が INTEGER affinity なので、書き込んだ文字列が数値として読み戻る。
+  // 比較のたびに型が食い違わないよう、ここで文字列に揃える。
+  return {
+    ...row,
+    toggl_entry_id: row.toggl_entry_id === null ? null : String(row.toggl_entry_id),
+  };
 }
 
 export async function startSession(

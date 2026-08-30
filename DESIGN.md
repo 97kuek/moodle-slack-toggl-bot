@@ -189,6 +189,7 @@ Moodle には Webhook が無く、イベントを push してもらえない。�
 ## Slack UI
 
 - **App Home が主役。** チャンネルや DM に流すだけだと流れて消えて TODO にならない
+- Slack のブロックは静的で、経過時間は描画時点のスナップショットにしかならない。数字が止まって見えても意味が取れるよう、計測中の表示には開始時刻を併記する（再描画は 5 分ごと）
 - ホーム上部に `＋ タスクを追加` `⚙️ 接続設定` `🔔 通知設定`。設定が足りないときは何が足りないかを出し、接続設定を強調する
 - 完了したタスクは 24 時間ホームに残し `↩︎ 戻す` を付ける。Moodle から再取得されないので、押し間違いの復旧手段がこれしかない
 - 手動タスクにだけ `🗑` を出す。Moodle 由来は消してもすぐ再取得される
@@ -220,11 +221,13 @@ Toggl には API 互換のない別系統の製品が 2 つある。**どちら�
 
 ```
 src/toggl/
-  tracker.ts   共通インターフェース（開始・停止・現在の計測・プロジェクト）
+  tracker.ts   共通インターフェース（開始・停止・現在の計測・プロジェクト・停止時刻）
   focus.ts     Toggl 2.0 用
   client.ts    Toggl Track 用
   index.ts     トークンの形で実装を選ぶ
 ```
+
+例外も `tracker.ts` に集約している。`TrackerAuthError` / `TrackerRateLimitError` / `TrackerError` の 3 種で、呼び出し側は製品を意識せずに扱える。
 
 **Toggl 2.0 固有の注意**
 
@@ -306,18 +309,37 @@ Moodle と Toggl のトークンが Workers Secrets から D1 に移る。D1 も
 
 ---
 
+## 設定画面の作り
+
+入力欄は少ないほどよい、という方針で削ってある。
+
+- **取得方式を選ばせない** — 入力が `https…` なら iCal、それ以外はトークンとして扱う
+- **組織 ID を探させない** — ブラウザの URL をそのまま貼れば数字を抜き出す
+- **ワークスペース ID を出さない** — API から取れるので画面に置かない
+- **認証情報の欄は空欄＝変更しない** — Slack の input は伏字にできないため、既存の値を初期表示しない
+- **保存すると DM で結果を返す** — 無反応だと届いたのか失敗したのか分からない。値は出さず項目名と長さだけ
+
+結果として接続設定は 4 欄になった。通知設定は見出しで意味の塊に分けている。
+
 ## ディレクトリ構成
 
 ```
 src/
-  index.ts          Worker の入口（fetch = Slack / scheduled = cron 3 本）
-  config.ts         環境変数と、挙動を決める定数
+  index.ts          Worker の入口（fetch = Slack / scheduled = cron 2 本）
+  config.ts         Env の型と、画面に出さない調整値の既定
+  settings.ts       設定の解決（D1 → 環境変数 → 既定）と保存・移行
   time.ts           タイムゾーン変換と表示フォーマット
   db/               D1 の型と薄いリポジトリ層
   moodle/           MoodleClient と 2 実装（webservice / ical）
-  toggl/            API クライアントと計測の開始・停止
+  toggl/            TimeTracker と 2 実装（focus / client）＋計測の開始・停止
   sync/             同期エンジン（reconcile）と通知ポリシー（notify）
-  slack/            Block Kit・App Home・ボタンのハンドラ
+  slack/
+    app.ts          ハンドラの登録だけ
+    views.ts        モーダルの定義
+    blocks.ts       App Home と通知の Block Kit
+    parse.ts        入力を保存できる形に直す純粋関数
+    messages.ts     保存結果の DM
+    home.ts         App Home の再描画
 migrations/         D1 のスキーマ
 scripts/
   bootstrap.sh      D1 作成 → wrangler.toml 生成 → デプロイ

@@ -1,8 +1,10 @@
 import { toIso } from "../time";
+import { TrackerAuthError, TrackerError, TrackerRateLimitError } from "./tracker";
 
 /**
- * Toggl Track API v9 の薄いクライアント。
+ * Toggl Track（v9）の薄いクライアント。
  * 認証は API トークンの Basic 認証（"<token>:api_token" を base64）。
+ * 共通インターフェースへの変換は src/toggl/index.ts のアダプタが行う。
  */
 
 const BASE = "https://api.track.toggl.com/api/v9";
@@ -22,32 +24,6 @@ export interface TogglProject {
   id: number;
   name: string;
   active: boolean;
-}
-
-export class TogglRateLimitError extends Error {
-  constructor() {
-    super("Toggl のレート制限に達しました");
-    this.name = "TogglRateLimitError";
-  }
-}
-
-/**
- * 認証の失敗（401 / 403）。
- * Toggl の API トークンには有効期限があり、期限切れや再発行で必ずここに来る。
- * 一般的な失敗と区別して、利用者に「入れ直してください」と伝えられるようにする。
- */
-export class TogglAuthError extends Error {
-  constructor() {
-    super("Toggl のトークンが無効か、有効期限が切れています");
-    this.name = "TogglAuthError";
-  }
-}
-
-export class TogglError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "TogglError";
-  }
 }
 
 export class TogglClient {
@@ -73,11 +49,11 @@ export class TogglClient {
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     });
 
-    if (res.status === 429) throw new TogglRateLimitError();
-    if (res.status === 401 || res.status === 403) throw new TogglAuthError();
+    if (res.status === 429) throw new TrackerRateLimitError();
+    if (res.status === 401 || res.status === 403) throw new TrackerAuthError();
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
-      throw new TogglError(`Toggl が HTTP ${res.status} を返しました (${path}) ${detail.slice(0, 200)}`);
+      throw new TrackerError(`Toggl が HTTP ${res.status} を返しました (${path}) ${detail.slice(0, 200)}`);
     }
     // 計測中の entry が無いときは 200 + 本文 "null" が返る
     const text = await res.text();
@@ -89,7 +65,7 @@ export class TogglClient {
     if (this.workspaceId !== null) return this.workspaceId;
     const me = await this.call<{ default_workspace_id?: number }>("/me");
     const id = me?.default_workspace_id;
-    if (!id) throw new TogglError("Toggl のワークスペースを特定できませんでした");
+    if (!id) throw new TrackerError("Toggl のワークスペースを特定できませんでした");
     this.workspaceId = id;
     return id;
   }
@@ -128,7 +104,7 @@ export class TogglClient {
         duration: -1,
       },
     });
-    if (!entry) throw new TogglError("Toggl が計測開始に応答しませんでした");
+    if (!entry) throw new TrackerError("Toggl が計測開始に応答しませんでした");
     return entry;
   }
 
@@ -153,7 +129,7 @@ export class TogglClient {
       method: "POST",
       body: { name, active: true, is_private: true, created_with: CREATED_WITH },
     });
-    if (!created) throw new TogglError(`Toggl のプロジェクト作成に失敗しました: ${name}`);
+    if (!created) throw new TrackerError(`Toggl のプロジェクト作成に失敗しました: ${name}`);
     return created.id;
   }
 }

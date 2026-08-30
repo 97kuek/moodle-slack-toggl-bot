@@ -133,15 +133,35 @@ export async function reconcileRunningEntry(env: Env, settings: Settings): Promi
   const current = await tracker.getCurrent();
   if (current && current.id === running.toggl_entry_id) return false;
 
+  // 5 分間隔のポーリングなので、検知した時刻で閉じると最大 5 分ぶん水増しになる。
+  // 実際の停止時刻が取れたらそれを使い、取れなければ検知時刻で代用する
+  //（計測が開いたまま残るほうが害が大きい）。
   const now = nowSec();
-  const duration = Math.max(0, now - running.started_at);
-  await repo.stopSession(env.DB, running.id, now, duration);
+  const stoppedAt = await resolveStoppedAt(tracker, running.toggl_entry_id, running.started_at, now);
+  const duration = Math.max(0, stoppedAt - running.started_at);
+  await repo.stopSession(env.DB, running.id, stoppedAt, duration);
   await repo.addTrackedSec(env.DB, running.task_id, duration);
   const task = await repo.getTask(env.DB, running.task_id);
   if (task?.status === "in_progress") {
     await repo.setStatus(env.DB, running.task_id, "open");
   }
   return true;
+}
+
+async function resolveStoppedAt(
+  tracker: TimeTracker,
+  entryId: string | null,
+  startedAt: number,
+  now: number,
+): Promise<number> {
+  if (!entryId) return now;
+  try {
+    const at = await tracker.getStoppedAt(entryId);
+    if (at !== null && at >= startedAt && at <= now) return at;
+  } catch {
+    // 取れなければ検知時刻で代用する
+  }
+  return now;
 }
 
 function isKnown(e: unknown): boolean {

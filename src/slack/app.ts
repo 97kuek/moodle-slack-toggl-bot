@@ -1,71 +1,22 @@
 import { SlackApp } from "slack-cloudflare-workers";
 import type { Env } from "../config";
 import * as repo from "../db/repo";
-import type { TaskRow } from "../db/types";
 import { createMoodleClient } from "../moodle";
 import { loadSettings, saveSettings, type SettingKey } from "../settings";
 import { syncMoodle } from "../sync/reconcile";
 import { startTracking, stopTracking } from "../toggl/tracking";
-import { nowSec, setTimezoneOffsetMin, startOfLocalDay, timezoneOffsetMin } from "../time";
+import { nowSec, setTimezoneOffsetMin } from "../time";
 import { ACTION } from "./blocks";
 import { publishHome } from "./home";
+import { reportSaved } from "./messages";
+import {
+  manualTask,
+  parseDue,
+  parseOrganizationId,
+  snoozeUntilTomorrowMorning,
+  splitMoodleCredential,
+} from "./parse";
 import { CALLBACK, addTaskModal, connectionModal, notificationModal, readValue } from "./views";
-import type { SlackAPIClient } from "slack-cloudflare-workers";
-
-/** 設定名の日本語ラベル。保存結果の確認メッセージに使う。 */
-const SETTING_LABEL: Record<string, string> = {
-  moodle_base_url: "Moodle の URL",
-  moodle_mode: "取得方式",
-  moodle_token: "Moodle のトークン",
-  moodle_ical_url: "Moodle の iCal URL",
-  toggl_api_token: "Toggl のトークン",
-  toggl_workspace_id: "Toggl のワークスペース ID",
-  toggl_organization_id: "Toggl の組織 ID",
-  timezone_offset_min: "タイムゾーン",
-  digest_hour: "朝のダイジェストの時刻",
-  due_tomorrow_hour: "「明日締切」の時刻",
-  due_soon_hours: "締切前の最終通知",
-  quiet_start_hour: "静音時間の開始",
-  quiet_end_hour: "静音時間の終了",
-  weekly_summary_weekday: "週次サマリの曜日",
-  weekly_summary_hour: "週次サマリの時刻",
-  notify_new: "新着通知",
-};
-
-/**
- * 保存した内容を DM で返す。
- * 保存しても画面に何も出ないと、成功したのか届いていないのかが分からない。
- * 値そのものは出さず、項目名と長さだけを返す。
- */
-async function reportSaved(
-  env: Env,
-  client: SlackAPIClient,
-  values: Partial<Record<SettingKey, string | null>>,
-): Promise<void> {
-  const saved = Object.entries(values).filter(([, v]) => typeof v === "string" && v.length > 0);
-  const lines = saved.map(([k, v]) => {
-    const label = SETTING_LABEL[k] ?? k;
-    const secret = k.includes("token") || k.includes("url");
-    return `• ${label}${secret ? `（${(v as string).length} 文字）` : `: ${v}`}`;
-  });
-  await repo.setState(env.DB, "last_settings_saved_at", String(nowSec()));
-  await client.chat.postMessage({
-    channel: env.SLACK_TARGET_CHANNEL || env.SLACK_USER_ID,
-    text: lines.length > 0 ? `設定を更新しました（${saved.length} 件）` : "変更はありませんでした",
-    blocks: [
-      {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text:
-            lines.length > 0
-              ? `*設定を更新しました*\n${lines.join("\n")}`
-              : "*変更はありませんでした*\n入力欄が空だったため、既存の設定はそのままです。",
-        },
-      },
-    ],
-  });
-}
 
 export const SLACK_EVENTS_PATH = "/slack/events";
 
@@ -216,12 +167,9 @@ export function createSlackApp(env: Env): SlackApp<Env> {
       const state = payload.view.state;
       const values: Partial<Record<SettingKey, string | null>> = {
         moodle_base_url: readValue(state, "moodle_base_url"),
-        moodle_mode: readValue(state, "moodle_mode"),
-        moodle_ical_url: readValue(state, "moodle_ical_url"),
-        moodle_token: readValue(state, "moodle_token"),
         toggl_api_token: readValue(state, "toggl_api_token"),
-        toggl_workspace_id: readValue(state, "toggl_workspace_id"),
-        toggl_organization_id: readValue(state, "toggl_organization_id"),
+        toggl_organization_id: parseOrganizationId(readValue(state, "toggl_org")),
+        ...splitMoodleCredential(readValue(state, "moodle_credential")),
       };
       await saveSettings(env.DB, values, nowSec());
       await reportSaved(env, context.client, values);
@@ -278,51 +226,4 @@ export function createSlackApp(env: Env): SlackApp<Env> {
 
 function buttonValue(payload: { actions?: { value?: string }[] }): string | null {
   return payload.actions?.[0]?.value ?? null;
-}
-
-/** 「😴 明日」= 翌日 9:00 まで黙る。 */
-export function snoozeUntilTomorrowMorning(now: number): number {
-  return startOfLocalDay(now) + 24 * 60 * 60 + 9 * 60 * 60;
-}
-
-/**
- * datepicker と timepicker の組みを unix 秒にする。
- * 日付だけ指定された場合は 23:59 として扱う（締切は日の終わりであることが多い）。
- */
-function parseDue(date: string | null, time: string | null): number | null {
-  if (!date) return null;
-  const [y, m, d] = date.split("-").map(Number);
-  if (!y || !m || !d) return null;
-  const [hh, mm] = (time ?? "23:59").split(":").map(Number);
-  const utcMs = Date.UTC(y, m - 1, d, hh ?? 23, mm ?? 59, 0);
-  // Slack のピッカーが返すのはローカル時刻なので、オフセットを引いて UTC に直す
-  return Math.floor(utcMs / 1000) - timezoneOffsetMin() * 60;
-}
-
-function manualTask(
-  title: string,
-  course: string | null,
-  dueAt: number | null,
-  now: number,
-): TaskRow {
-  return {
-    id: repo.newId(),
-    source: "manual",
-    source_id: repo.newId(),
-    course_id: course,
-    course_name: course,
-    title,
-    kind: "event",
-    url: null,
-    instance_id: null,
-    due_at: dueAt,
-    submitted_at: null,
-    status: "open",
-    snooze_until: null,
-    tracked_sec: 0,
-    completed_at: null,
-    submission_checked_at: null,
-    first_seen_at: now,
-    last_seen_at: now,
-  };
 }
