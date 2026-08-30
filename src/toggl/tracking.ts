@@ -1,13 +1,19 @@
 import type { Env } from "../config";
-import { isTogglReady, type Settings } from "../settings";
 import * as repo from "../db/repo";
 import type { TaskRow } from "../db/types";
+import type { Settings } from "../settings";
 import { nowSec } from "../time";
-import { TogglClient, TogglError, TogglRateLimitError } from "./client";
+import { createTracker } from "./index";
+import {
+  TrackerAuthError,
+  TrackerError,
+  TrackerRateLimitError,
+  type TimeTracker,
+} from "./tracker";
 
 /**
- * Slack のボタンと Toggl の間の橋渡し。
- * 操作は必ず Slack 起点（片方向）で、Toggl → Slack は表示の同期だけ（§8）。
+ * Slack のボタンと時間計測サービスの間の橋渡し。
+ * 操作は必ず Slack 起点（片方向）で、計測側 → Slack は表示の同期だけ。
  */
 
 export interface TrackingResult {
@@ -15,78 +21,89 @@ export interface TrackingResult {
   message: string;
 }
 
-export function createTogglClient(settings: Settings): TogglClient {
-  return new TogglClient(settings.togglApiToken ?? "", settings.togglWorkspaceId ?? undefined);
+const NOT_CONFIGURED =
+  "Toggl のトークンが未設定です。ホームタブの「⚙️ 接続設定」から登録すると計測できるようになります。";
+
+const AUTH_FAILED =
+  "Toggl のトークンが無効か、有効期限が切れています。プロフィール設定で発行し直して、「⚙️ 接続設定」に貼り直してください。";
+
+/** 未設定・設定不足を 1 か所で判定する。 */
+function resolveTracker(settings: Settings): { tracker: TimeTracker | null; message: string } {
+  const tracker = createTracker(settings);
+  if (!tracker) return { tracker: null, message: NOT_CONFIGURED };
+  const missing = tracker.missing();
+  if (missing.length > 0) {
+    return {
+      tracker: null,
+      message: `${missing.join("・")}が未設定です。ホームタブの「⚙️ 接続設定」から登録してください。`,
+    };
+  }
+  return { tracker, message: "" };
 }
 
-/** 科目に対応する Toggl プロジェクトを引く。無ければ作って覚える。 */
+/** 分類に対応するプロジェクトを引く。無ければ作って覚える。 */
 async function resolveProjectId(
   env: Env,
-  toggl: TogglClient,
+  tracker: TimeTracker,
   task: TaskRow,
-): Promise<number | null> {
+): Promise<string | null> {
   if (!task.course_id || !task.course_name) return null;
   const mapped = await repo.listCourseProjects(env.DB);
   const hit = mapped.find((m) => m.course_id === task.course_id);
-  if (hit) return hit.toggl_project_id;
+  if (hit) return String(hit.toggl_project_id);
 
-  const projectId = await toggl.findOrCreateProject(task.course_name);
-  await repo.putCourseProject(env.DB, task.course_id, task.course_name, projectId);
+  const projectId = await tracker.findOrCreateProject(task.course_name);
+  if (projectId !== null) {
+    await repo.putCourseProject(env.DB, task.course_id, task.course_name, projectId);
+  }
   return projectId;
 }
-
-const NOT_CONFIGURED =
-  "Toggl の API トークンが未設定です。ホームタブの「⚙️ 接続設定」から登録すると計測できるようになります。";
 
 export async function startTracking(
   env: Env,
   settings: Settings,
   taskId: string,
 ): Promise<TrackingResult> {
-  if (!isTogglReady(settings)) return { ok: false, message: NOT_CONFIGURED };
+  const { tracker, message } = resolveTracker(settings);
+  if (!tracker) return { ok: false, message };
+
   const now = nowSec();
   const task = await repo.getTask(env.DB, taskId);
   if (!task) return { ok: false, message: "タスクが見つかりませんでした" };
 
-  // 走っているものがあれば先に閉じる（Toggl 側も 1 本しか走らせない）
+  // 走っているものがあれば先に閉じる（計測側も 1 本しか走らせない）
   await stopTracking(env, settings);
 
-  const toggl = createTogglClient(settings);
   try {
-    const projectId = await resolveProjectId(env, toggl, task);
-    const entry = await toggl.startEntry({
+    const projectId = await resolveProjectId(env, tracker, task);
+    const entry = await tracker.start({
       description: task.title,
       projectId,
-      tags: ["moodle"],
       startedAt: now,
     });
     await repo.startSession(env.DB, task.id, entry.id, now);
     await repo.setStatus(env.DB, task.id, "in_progress");
     return { ok: true, message: `計測を開始しました: ${task.title}` };
   } catch (e) {
-    if (e instanceof TogglRateLimitError) {
-      return { ok: false, message: "Toggl のレート制限のため計測を開始できませんでした" };
-    }
-    if (e instanceof TogglError) {
-      return { ok: false, message: `計測開始に失敗しました: ${e.message}` };
-    }
-    throw e;
+    return { ok: false, message: describe(e) };
   }
 }
 
 /** 走っている計測を止めて実績を積算する。走っていなければ何もしない。 */
 export async function stopTracking(env: Env, settings: Settings): Promise<TrackingResult> {
-  if (!isTogglReady(settings)) return { ok: false, message: NOT_CONFIGURED };
+  const { tracker, message } = resolveTracker(settings);
+  if (!tracker) return { ok: false, message };
+
   const now = nowSec();
   const running = await repo.getRunningSession(env.DB);
   if (!running) return { ok: true, message: "計測していません" };
 
   if (running.toggl_entry_id !== null) {
     try {
-      await createTogglClient(settings).stopEntry(running.toggl_entry_id);
+      await tracker.stop(running.toggl_entry_id, now);
     } catch (e) {
-      // Toggl 側で既に止められていることがある。ローカルの記録は必ず閉じる。
-      if (!(e instanceof TogglError) && !(e instanceof TogglRateLimitError)) throw e;
+      // 計測側で既に止められていることがある。ローカルの記録は必ず閉じる。
+      if (!isKnown(e)) throw e;
     }
   }
 
@@ -102,39 +119,42 @@ export async function stopTracking(env: Env, settings: Settings): Promise<Tracki
 }
 
 /**
- * Toggl 側で手動停止された場合に、こちらの「計測中」表示を畳む。
- * 表示合わせだけの片方向同期で、Toggl の内容をこちらから書き戻すことはしない。
+ * 計測側で手動停止された場合に、こちらの「計測中」表示を畳む。
+ * 表示合わせだけの片方向同期で、こちらから書き戻すことはしない。
  * @returns 表示が変わったら true
  */
 export async function reconcileRunningEntry(env: Env, settings: Settings): Promise<boolean> {
-  if (!isTogglReady(settings)) return false;
+  const { tracker } = resolveTracker(settings);
+  if (!tracker) return false;
+
   const running = await repo.getRunningSession(env.DB);
   if (!running) return false;
 
-  const toggl = createTogglClient(settings);
-  const current = await toggl.getCurrentEntry();
+  const current = await tracker.getCurrent();
   if (current && current.id === running.toggl_entry_id) return false;
 
-  // Toggl 側で止められていた場合、検知した時刻で閉じると最大 5 分ぶん水増しになる。
-  // 実際の停止時刻を問い合わせて、取れたらそれを使う。
   const now = nowSec();
-  let stoppedAt = now;
-  if (running.toggl_entry_id !== null) {
-    try {
-      const entry = await toggl.getEntry(running.toggl_entry_id);
-      const stop = entry?.stop ? Math.floor(Date.parse(entry.stop) / 1000) : NaN;
-      if (Number.isFinite(stop) && stop >= running.started_at && stop <= now) stoppedAt = stop;
-    } catch {
-      // 取れなければ検知時刻で閉じる。計測が開いたままになるよりはよい。
-    }
-  }
-
-  const duration = Math.max(0, stoppedAt - running.started_at);
-  await repo.stopSession(env.DB, running.id, stoppedAt, duration);
+  const duration = Math.max(0, now - running.started_at);
+  await repo.stopSession(env.DB, running.id, now, duration);
   await repo.addTrackedSec(env.DB, running.task_id, duration);
   const task = await repo.getTask(env.DB, running.task_id);
   if (task?.status === "in_progress") {
     await repo.setStatus(env.DB, running.task_id, "open");
   }
   return true;
+}
+
+function isKnown(e: unknown): boolean {
+  return (
+    e instanceof TrackerError || e instanceof TrackerRateLimitError || e instanceof TrackerAuthError
+  );
+}
+
+function describe(e: unknown): string {
+  if (e instanceof TrackerAuthError) return AUTH_FAILED;
+  if (e instanceof TrackerRateLimitError) {
+    return "Toggl のレート制限のため計測を開始できませんでした";
+  }
+  if (e instanceof TrackerError) return `計測開始に失敗しました: ${e.message}`;
+  throw e;
 }

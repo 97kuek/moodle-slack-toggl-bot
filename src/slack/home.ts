@@ -39,4 +39,6 @@ export async function publishHome(
   });
 
   await client.views.publish({ user_id: env.SLACK_USER_ID, view });
+
+  await repo.setState(db, "last_home_published_at", String(now));
 }

@@ -118,6 +118,11 @@ export function connectionModal(s: Settings): ModalView {
       placeholder: s.togglApiToken ? "設定済み（変更する場合のみ入力）" : "未設定",
       hint: "https://track.toggl.com/profile の最下部。未設定でも通知と TODO は動く",
     }),
+    text("toggl_organization_id", "Toggl の組織 ID", {
+      optional: true,
+      initial: s.togglOrganizationId,
+      hint: "Toggl 2.0（toggl_sk_ で始まるトークン）の場合のみ必要。ブラウザの URL に含まれる数字",
+    }),
     text("toggl_workspace_id", "Toggl のワークスペース ID", {
       optional: true,
       initial: s.togglWorkspaceId,

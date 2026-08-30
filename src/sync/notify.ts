@@ -128,6 +128,11 @@ export async function maybeSendDigest(
   if (now < target) return false;
   const last = await repo.getStateNumber(db, "last_digest_at");
   if (last !== null && last >= target) return false;
+  // 時刻を大きく過ぎている場合は送らずに記録だけ進める
+  if (now - target > CONFIG.catchUpWindowSec) {
+    await repo.setState(db, "last_digest_at", String(now));
+    return false;
+  }
 
   const active = await repo.listActiveTasks(db, CONFIG.maxTasksOnHome);
   const soon = active.filter(
@@ -205,6 +210,10 @@ export async function maybeSendWeeklySummary(
   if (now < target) return false;
   const last = await repo.getStateNumber(db, "last_weekly_summary_at");
   if (last !== null && last >= target) return false;
+  if (now - target > CONFIG.catchUpWindowSec) {
+    await repo.setState(db, "last_weekly_summary_at", String(now));
+    return false;
+  }
 
   const [byCourse, completed, active] = await Promise.all([
     repo.trackedByCourse(db, weekStart, now),

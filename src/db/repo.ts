@@ -242,7 +242,7 @@ export async function getRunningSession(db: D1Database): Promise<TimeSessionRow 
 export async function startSession(
   db: D1Database,
   taskId: string,
-  togglEntryId: number | null,
+  togglEntryId: string | null,
   startedAt: number,
 ): Promise<string> {
   const id = newId();
@@ -378,7 +378,7 @@ export async function putCourseProject(
   db: D1Database,
   courseId: string,
   courseName: string | null,
-  projectId: number,
+  projectId: string,
 ): Promise<void> {
   await db
     .prepare(

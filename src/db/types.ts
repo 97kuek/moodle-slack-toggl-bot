@@ -26,7 +26,7 @@ export interface TaskRow {
 export interface TimeSessionRow {
   id: string;
   task_id: string;
-  toggl_entry_id: number | null;
+  toggl_entry_id: string | null;
   started_at: number;
   stopped_at: number | null;
   duration_sec: number | null;
@@ -35,5 +35,5 @@ export interface TimeSessionRow {
 export interface CourseProjectRow {
   course_id: string;
   course_name: string | null;
-  toggl_project_id: number;
+  toggl_project_id: string;
 }

@@ -40,7 +40,20 @@ export default {
         toggl: isTogglReady(settings) ? "有効" : "未設定（計測ボタンのみ無効）",
         timezone_offset_min: settings.timezoneOffsetMin,
         last_sync_at: await repo.getStateNumber(env.DB, "last_sync_at"),
+        last_slack_event_at: await repo.getStateNumber(env.DB, "last_slack_event_at"),
+        last_settings_saved_at: await repo.getStateNumber(env.DB, "last_settings_saved_at"),
         now: nowSec(),
+      });
+    }
+
+    // Slack 側が今どう認識しているかを確認するための診断。
+    // 表示名を変えたのに反映されない、といった切り分けに使う。追加スコープは不要。
+    if (url.pathname === "/whoami") {
+      const res = await new SlackAPIClient(env.SLACK_BOT_TOKEN).auth.test();
+      return Response.json({
+        bot_handle: (res as { user?: string }).user ?? null,
+        bot_user_id: (res as { user_id?: string }).user_id ?? null,
+        team: (res as { team?: string }).team ?? null,
       });
     }
 

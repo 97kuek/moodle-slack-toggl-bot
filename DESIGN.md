@@ -207,26 +207,49 @@ Moodle には Webhook が無く、イベントを push してもらえない。�
 
 ---
 
-## Toggl 連携
+## 時間計測の連携
 
-- Toggl Track API v9。認証は API トークンの Basic 認証（`<token>:api_token`）
-- `▶︎ 開始` → 走っている entry があれば自動 stop → 新規開始（description = 課題名、project = 科目、tag = `moodle`）
-- 科目 ⇄ プロジェクトは**自動生成**。ユーザーに手動マッピングを求めない
-- Toggl のレポートがそのまま「科目別の勉強時間」になる
+Toggl には API 互換のない別系統の製品が 2 つある。**どちらかはトークンの形で判別できる**ので、利用者に選ばせない。Moodle と同じく差異を 1 か所に閉じ込める。
+
+| | Toggl Track | Toggl 2.0（Focus） |
+|---|---|---|
+| ホスト | `api.track.toggl.com/api/v9` | `focus.toggl.com/api` |
+| 認証 | Basic `token:api_token` | Bearer `toggl_sk_...` |
+| トークン | 32 桁の 16 進 | `toggl_sk_` + 32 文字・有効期限あり |
+| 計測 | `/time_entries` | `/organizations/{org}/workspaces/{ws}/tracking/{current,start,stop}` |
+
+```
+src/toggl/
+  tracker.ts   共通インターフェース（開始・停止・現在の計測・プロジェクト）
+  focus.ts     Toggl 2.0 用
+  client.ts    Toggl Track 用
+  index.ts     トークンの形で実装を選ぶ
+```
+
+**Toggl 2.0 固有の注意**
+
+- `organization_id` を返すエンドポイントが存在しない。ブラウザの URL
+  (`focus.toggl.com/{organization_id}/workspaces/{workspace_id}/...`) から拾って設定する
+- `workspace_id` は `/users/me/settings` から自動で取れるので設定は不要
+- `tracking/current` は何も走っていないとき **204 No Content** を返す
+- `tracking/stop` は entry id を取らず、走っているものを止める
+- トークンは 1 ユーザー 1 本で、再発行すると即座に古いものが失効する。生成時に一度しか表示されない
+
+**操作の流れ**
+
+- `▶︎ 開始` → 走っている計測があれば自動 stop → 新規開始（description = タスク名、project = 分類）
+- 分類 ⇄ プロジェクトは**自動生成**。手動マッピングを求めない
 
 **同期は片方向**
 
-- 操作は Slack 起点のみ（Slack → Toggl）
-- Toggl → Slack は表示の同期だけ。5 分ごとに `/me/time_entries/current` を見て「計測中」表示を更新する
+- 操作は Slack 起点のみ
+- 計測側 → Slack は表示の同期だけ。5 分ごとに現在の計測を見て「計測中」表示を更新する
 - 双方向に書き込むと競合解決が泥沼になるため、意図的に制限する
 
-**Toggl は任意**
+**任意**
 
 - 時間データの正は常にローカルの `time_sessions`。Toggl はその鏡
 - トークン未設定でも同期・通知・TODO は動き、計測ボタンだけが「未設定です」と返す
-- Toggl を使うか自前で完結させるかは、後からいつでも変えられる
-
----
 
 ## 完了判定の UX
 

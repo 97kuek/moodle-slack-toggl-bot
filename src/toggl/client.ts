@@ -31,6 +31,18 @@ export class TogglRateLimitError extends Error {
   }
 }
 
+/**
+ * 認証の失敗（401 / 403）。
+ * Toggl の API トークンには有効期限があり、期限切れや再発行で必ずここに来る。
+ * 一般的な失敗と区別して、利用者に「入れ直してください」と伝えられるようにする。
+ */
+export class TogglAuthError extends Error {
+  constructor() {
+    super("Toggl のトークンが無効か、有効期限が切れています");
+    this.name = "TogglAuthError";
+  }
+}
+
 export class TogglError extends Error {
   constructor(message: string) {
     super(message);
@@ -62,6 +74,7 @@ export class TogglClient {
     });
 
     if (res.status === 429) throw new TogglRateLimitError();
+    if (res.status === 401 || res.status === 403) throw new TogglAuthError();
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
       throw new TogglError(`Toggl が HTTP ${res.status} を返しました (${path}) ${detail.slice(0, 200)}`);

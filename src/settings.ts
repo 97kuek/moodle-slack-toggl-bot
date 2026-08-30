@@ -16,6 +16,7 @@ export interface Settings {
   moodleIcalUrl: string | null;
   togglApiToken: string | null;
   togglWorkspaceId: string | null;
+  togglOrganizationId: string | null;
 
   // 通知
   timezoneOffsetMin: number;
@@ -37,6 +38,7 @@ export const SETTING_KEYS = [
   "moodle_ical_url",
   "toggl_api_token",
   "toggl_workspace_id",
+  "toggl_organization_id",
   "timezone_offset_min",
   "digest_hour",
   "due_tomorrow_hour",
@@ -112,6 +114,7 @@ export function resolveSettings(env: Env, stored: Map<string, string>): Settings
     moodleIcalUrl: str(stored, "moodle_ical_url", env.MOODLE_ICAL_URL),
     togglApiToken: str(stored, "toggl_api_token", env.TOGGL_API_TOKEN),
     togglWorkspaceId: str(stored, "toggl_workspace_id", env.TOGGL_WORKSPACE_ID),
+    togglOrganizationId: str(stored, "toggl_organization_id", env.TOGGL_ORGANIZATION_ID),
 
     timezoneOffsetMin: num(
       stored,
@@ -152,6 +155,7 @@ export async function seedSettingsFromEnv(
     ["moodle_ical_url", env.MOODLE_ICAL_URL],
     ["toggl_api_token", env.TOGGL_API_TOKEN],
     ["toggl_workspace_id", env.TOGGL_WORKSPACE_ID],
+    ["toggl_organization_id", env.TOGGL_ORGANIZATION_ID],
     ["timezone_offset_min", env.TIMEZONE_OFFSET_MIN],
   ];
 
@@ -191,5 +195,8 @@ export function missingSettings(s: Settings): string[] {
 }
 
 export function isTogglReady(s: Settings): boolean {
-  return typeof s.togglApiToken === "string" && s.togglApiToken.length > 0;
+  if (!s.togglApiToken) return false;
+  // Toggl 2.0 は organization_id を返す API が無いため、設定が要る。
+  if (s.togglApiToken.startsWith("toggl_sk_") && !s.togglOrganizationId) return false;
+  return true;
 }

@@ -21,6 +21,7 @@ export type Env = SlackEdgeAppEnv & {
   // Toggl
   TOGGL_API_TOKEN: string;
   TOGGL_WORKSPACE_ID?: string;
+  TOGGL_ORGANIZATION_ID?: string;
 };
 
 /**
@@ -66,6 +67,13 @@ export const CONFIG = {
 
   /** 朝のダイジェストを送る時刻 */
   digestHour: 7,
+
+  /**
+   * 定時通知の遅れをどこまで許すか。
+   * cron の取りこぼしは拾いたいが、デプロイ直後や長い停止のあとに
+   * 「おはようございます」が夜に届くのは誤りなので、窓を切る。
+   */
+  catchUpWindowSec: 2 * 60 * 60,
 
   /** App Home の「最近完了したもの」に出す件数（押し間違いの復旧用） */
   maxRecentlyCompletedOnHome: 5,
