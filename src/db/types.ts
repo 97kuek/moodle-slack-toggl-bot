@@ -8,6 +8,8 @@ export interface TaskRow {
   source_id: string;
   course_id: string | null;
   course_name: string | null;
+  /** 分類。Toggl のプロジェクトになる。Moodle 由来はすべて同じ値でまとめる */
+  category: string | null;
   title: string;
   kind: TaskKind | null;
   url: string | null;
@@ -32,8 +34,7 @@ export interface TimeSessionRow {
   duration_sec: number | null;
 }
 
-export interface CourseProjectRow {
-  course_id: string;
-  course_name: string | null;
+export interface CategoryProjectRow {
+  category: string;
   toggl_project_id: string;
 }

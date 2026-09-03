@@ -26,6 +26,8 @@ export async function syncMoodle(
   db: D1Database,
   client: MoodleClient,
   now: number,
+  /** 取り込んだタスクをまとめる分類。科目ごとに分けず、大学の課題を 1 つにまとめる */
+  category: string,
 ): Promise<SyncOutcome> {
   const fetched = await client.fetchUpcoming();
   const raw = fetched.slice(0, CONFIG.maxTasksPerSync);
@@ -43,7 +45,7 @@ export async function syncMoodle(
     const prev = bySourceId.get(item.sourceId);
 
     if (!prev) {
-      const row = toTaskRow(item, client.source, now);
+      const row = toTaskRow(item, client.source, category, now);
       statements.push(repo.insertTaskStmt(db, row));
       inserted.push(row);
       continue;
@@ -162,13 +164,21 @@ export async function syncSubmissions(
   return submitted;
 }
 
-function toTaskRow(item: RawMoodleTask, source: string, now: number): TaskRow {
+function toTaskRow(
+  item: RawMoodleTask,
+  source: string,
+  category: string,
+  now: number,
+): TaskRow {
   return {
     id: repo.newId(),
     source,
     source_id: item.sourceId,
     course_id: item.courseId,
     course_name: item.courseName,
+    // 分類は取り込み時に一度だけ決める。以後は同期で上書きしないので、
+    // 手で別の分類に移したタスクはそのまま残る。
+    category,
     title: item.title,
     kind: item.kind,
     url: item.url,

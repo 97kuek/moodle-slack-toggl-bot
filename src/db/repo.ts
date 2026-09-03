@@ -1,5 +1,5 @@
 import type {
-  CourseProjectRow,
+  CategoryProjectRow,
   NotificationKind,
   TaskRow,
   TaskStatus,
@@ -17,9 +17,11 @@ export function newId(): string {
   return crypto.randomUUID();
 }
 
-const TASK_COLUMNS = `id, source, source_id, course_id, course_name, title, kind, url,
+const TASK_COLUMNS = `id, source, source_id, course_id, course_name, category, title, kind, url,
   instance_id, due_at, submitted_at, status, snooze_until, tracked_sec, completed_at,
   submission_checked_at, first_seen_at, last_seen_at`;
+
+const TASK_COLUMN_NAMES = TASK_COLUMNS.split(",").map((c) => c.trim());
 
 // ---------------------------------------------------------------- tasks
 
@@ -31,17 +33,23 @@ export async function listTasksBySource(db: D1Database, source: string): Promise
   return res.results ?? [];
 }
 
-/** App Home と通知の対象になる、生きているタスク。 */
-export async function listActiveTasks(db: D1Database, limit: number): Promise<TaskRow[]> {
-  const res = await db
-    .prepare(
-      `SELECT ${TASK_COLUMNS} FROM tasks
-       WHERE status IN ('open', 'in_progress')
-       ORDER BY due_at IS NULL, due_at ASC
-       LIMIT ?1`,
-    )
-    .bind(limit)
-    .all<TaskRow>();
+/**
+ * App Home と通知の対象になる、生きているタスク。
+ * category を渡すとその分類だけに絞る（App Home の絞り込み用。通知では絞らない）。
+ */
+export async function listActiveTasks(
+  db: D1Database,
+  limit: number,
+  category?: string | null,
+): Promise<TaskRow[]> {
+  const where = category ? `AND category = ?2` : ``;
+  const stmt = db.prepare(
+    `SELECT ${TASK_COLUMNS} FROM tasks
+     WHERE status IN ('open', 'in_progress') ${where}
+     ORDER BY due_at IS NULL, due_at ASC
+     LIMIT ?1`,
+  );
+  const res = await (category ? stmt.bind(limit, category) : stmt.bind(limit)).all<TaskRow>();
   return res.results ?? [];
 }
 
@@ -56,7 +64,7 @@ export function insertTaskStmt(db: D1Database, task: TaskRow): D1PreparedStateme
   return db
     .prepare(
       `INSERT INTO tasks (${TASK_COLUMNS})
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)`,
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)`,
     )
     .bind(
       task.id,
@@ -64,6 +72,7 @@ export function insertTaskStmt(db: D1Database, task: TaskRow): D1PreparedStateme
       task.source_id,
       task.course_id,
       task.course_name,
+      task.category,
       task.title,
       task.kind,
       task.url,
@@ -80,7 +89,11 @@ export function insertTaskStmt(db: D1Database, task: TaskRow): D1PreparedStateme
     );
 }
 
-/** Moodle 側の内容で上書きする更新。ローカルの状態（status / snooze / 実績）は触らない。 */
+/**
+ * Moodle 側の内容で上書きする更新。
+ * ローカルの状態（status / snooze / 実績）は触らない。
+ * 分類も触らない。手で変えた分類が次の同期で戻ってしまうため。
+ */
 export function updateTaskFromMoodleStmt(
   db: D1Database,
   id: string,
@@ -122,11 +135,23 @@ export function markSubmittedStmt(db: D1Database, id: string, submittedAt: numbe
 }
 
 /** 手動の「完了」。いつ終わらせたかを残して週次サマリの集計に使う。 */
-export async function markDone(db: D1Database, id: string, at: number): Promise<void> {
-  await db
+export function markDoneStmt(db: D1Database, id: string, at: number): D1PreparedStatement {
+  return db
     .prepare(`UPDATE tasks SET status = 'done', completed_at = COALESCE(completed_at, ?2) WHERE id = ?1`)
-    .bind(id, at)
-    .run();
+    .bind(id, at);
+}
+
+export async function markDone(db: D1Database, id: string, at: number): Promise<void> {
+  await markDoneStmt(db, id, at).run();
+}
+
+/** 分類を変える。Moodle 由来のタスクでも、ここで変えたものは同期で戻らない。 */
+export async function setCategory(
+  db: D1Database,
+  id: string,
+  category: string | null,
+): Promise<void> {
+  await db.prepare(`UPDATE tasks SET category = ?2 WHERE id = ?1`).bind(id, category).run();
 }
 
 export async function snoozeTask(db: D1Database, id: string, until: number): Promise<void> {
@@ -246,6 +271,52 @@ export async function getRunningSession(db: D1Database): Promise<TimeSessionRow 
   };
 }
 
+/**
+ * 走っているセッションと、その対象タスクを 1 回のクエリで引く。
+ * App Home を描くたびに 2 往復させると、その分ボタンの反応が遅れる。
+ */
+export async function getRunningWithTask(
+  db: D1Database,
+): Promise<{ session: TimeSessionRow; task: TaskRow | null } | null> {
+  const row = await db
+    .prepare(
+      `SELECT s.id AS session_id, s.task_id, s.toggl_entry_id, s.started_at, s.duration_sec,
+              ${TASK_COLUMN_NAMES.map((c) => `t.${c}`).join(", ")}
+       FROM time_sessions s LEFT JOIN tasks t ON t.id = s.task_id
+       WHERE s.stopped_at IS NULL ORDER BY s.started_at DESC LIMIT 1`,
+    )
+    .first<Record<string, unknown>>();
+  if (!row) return null;
+  return {
+    session: {
+      id: String(row["session_id"]),
+      task_id: String(row["task_id"]),
+      toggl_entry_id: row["toggl_entry_id"] === null ? null : String(row["toggl_entry_id"]),
+      started_at: Number(row["started_at"]),
+      stopped_at: null,
+      duration_sec: row["duration_sec"] === null ? null : Number(row["duration_sec"]),
+    },
+    // join した行にはセッション側の列も混ざっているので、tasks の列だけを取り出す。
+    task: row["id"]
+      ? (Object.fromEntries(TASK_COLUMN_NAMES.map((c) => [c, row[c]])) as unknown as TaskRow)
+      : null,
+  };
+}
+
+export function startSessionStmt(
+  db: D1Database,
+  id: string,
+  taskId: string,
+  togglEntryId: string | null,
+  startedAt: number,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO time_sessions (id, task_id, toggl_entry_id, started_at) VALUES (?1, ?2, ?3, ?4)`,
+    )
+    .bind(id, taskId, togglEntryId, startedAt);
+}
+
 export async function startSession(
   db: D1Database,
   taskId: string,
@@ -253,13 +324,19 @@ export async function startSession(
   startedAt: number,
 ): Promise<string> {
   const id = newId();
-  await db
-    .prepare(
-      `INSERT INTO time_sessions (id, task_id, toggl_entry_id, started_at) VALUES (?1, ?2, ?3, ?4)`,
-    )
-    .bind(id, taskId, togglEntryId, startedAt)
-    .run();
+  await startSessionStmt(db, id, taskId, togglEntryId, startedAt).run();
   return id;
+}
+
+export function stopSessionStmt(
+  db: D1Database,
+  sessionId: string,
+  stoppedAt: number,
+  durationSec: number,
+): D1PreparedStatement {
+  return db
+    .prepare(`UPDATE time_sessions SET stopped_at = ?2, duration_sec = ?3 WHERE id = ?1`)
+    .bind(sessionId, stoppedAt, Math.max(0, Math.round(durationSec)));
 }
 
 export async function stopSession(
@@ -268,10 +345,40 @@ export async function stopSession(
   stoppedAt: number,
   durationSec: number,
 ): Promise<void> {
+  await stopSessionStmt(db, sessionId, stoppedAt, durationSec).run();
+}
+
+export function addTrackedSecStmt(db: D1Database, id: string, sec: number): D1PreparedStatement {
+  return db
+    .prepare(`UPDATE tasks SET tracked_sec = tracked_sec + ?2 WHERE id = ?1`)
+    .bind(id, Math.max(0, Math.round(sec)));
+}
+
+/**
+ * 計測を始めた事実だけ先に書いておき、Toggl の entry id は後から入れる。
+ * ボタンの反応を Toggl の往復より先に返すための後追い更新。
+ */
+export async function setSessionEntryId(
+  db: D1Database,
+  sessionId: string,
+  entryId: string,
+): Promise<void> {
   await db
-    .prepare(`UPDATE time_sessions SET stopped_at = ?2, duration_sec = ?3 WHERE id = ?1`)
-    .bind(sessionId, stoppedAt, Math.max(0, Math.round(durationSec)))
+    .prepare(`UPDATE time_sessions SET toggl_entry_id = ?2 WHERE id = ?1`)
+    .bind(sessionId, entryId)
     .run();
+}
+
+/** Toggl 側で開始できなかったときに、先に書いたセッションを無かったことにする。 */
+export async function discardSession(
+  db: D1Database,
+  sessionId: string,
+  taskId: string,
+): Promise<void> {
+  await db.batch([
+    db.prepare(`DELETE FROM time_sessions WHERE id = ?1`).bind(sessionId),
+    db.prepare(`UPDATE tasks SET status = 'open' WHERE id = ?1 AND status = 'in_progress'`).bind(taskId),
+  ]);
 }
 
 /** JST の今日ぶんの実績（計測中のぶんは含まない）。 */
@@ -331,27 +438,56 @@ export async function markUndone(db: D1Database, id: string): Promise<void> {
     .run();
 }
 
-export interface CourseTotal {
-  course: string | null;
+export interface CategoryTotal {
+  category: string | null;
   sec: number;
   sessions: number;
 }
 
-/** 期間内の学習時間を科目別に集計する（週次サマリ用）。 */
-export async function trackedByCourse(
+/** 期間内の学習時間を分類別に集計する（週次サマリ用）。 */
+export async function trackedByCategory(
   db: D1Database,
   from: number,
   to: number,
-): Promise<CourseTotal[]> {
+): Promise<CategoryTotal[]> {
   const res = await db
     .prepare(
-      `SELECT t.course_name AS course, SUM(s.duration_sec) AS sec, COUNT(*) AS sessions
+      `SELECT t.category AS category, SUM(s.duration_sec) AS sec, COUNT(*) AS sessions
        FROM time_sessions s JOIN tasks t ON t.id = s.task_id
        WHERE s.stopped_at IS NOT NULL AND s.started_at >= ?1 AND s.started_at < ?2
-       GROUP BY t.course_name ORDER BY sec DESC`,
+       GROUP BY t.category ORDER BY sec DESC`,
     )
     .bind(from, to)
-    .all<CourseTotal>();
+    .all<CategoryTotal>();
+  return res.results ?? [];
+}
+
+export interface CompletionDay {
+  /** ローカル日付を表す通し番号（unix 秒 + オフセットを 86400 で割ったもの） */
+  day: number;
+  n: number;
+}
+
+/**
+ * 完了した日ごとの件数を新しい順に返す。「今日 n 件」と「連続日数」の材料。
+ *
+ * 日付の切り出しは SQLite 側でやる。件数ぶんの行を JS に持ってきて数えると、
+ * 学期が進むほど App Home の描画が重くなる。
+ */
+export async function completionsByDay(
+  db: D1Database,
+  tzOffsetSec: number,
+  since: number,
+  limitDays: number,
+): Promise<CompletionDay[]> {
+  const res = await db
+    .prepare(
+      `SELECT (completed_at + ?1) / 86400 AS day, COUNT(*) AS n FROM tasks
+       WHERE completed_at IS NOT NULL AND completed_at >= ?2
+       GROUP BY day ORDER BY day DESC LIMIT ?3`,
+    )
+    .bind(tzOffsetSec, since, limitDays)
+    .all<CompletionDay>();
   return res.results ?? [];
 }
 
@@ -372,28 +508,26 @@ export async function completedBetween(
   return res.results ?? [];
 }
 
-// ---------------------------------------------------- course_project_map
+// -------------------------------------------------- category_project_map
 
-export async function listCourseProjects(db: D1Database): Promise<CourseProjectRow[]> {
+export async function listCategoryProjects(db: D1Database): Promise<CategoryProjectRow[]> {
   const res = await db
-    .prepare(`SELECT course_id, course_name, toggl_project_id FROM course_project_map`)
-    .all<CourseProjectRow>();
+    .prepare(`SELECT category, toggl_project_id FROM category_project_map`)
+    .all<CategoryProjectRow>();
   return res.results ?? [];
 }
 
-export async function putCourseProject(
+export async function putCategoryProject(
   db: D1Database,
-  courseId: string,
-  courseName: string | null,
+  category: string,
   projectId: string,
 ): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO course_project_map (course_id, course_name, toggl_project_id)
-       VALUES (?1, ?2, ?3)
-       ON CONFLICT (course_id) DO UPDATE SET course_name = ?2, toggl_project_id = ?3`,
+      `INSERT INTO category_project_map (category, toggl_project_id) VALUES (?1, ?2)
+       ON CONFLICT (category) DO UPDATE SET toggl_project_id = ?2`,
     )
-    .bind(courseId, courseName, projectId)
+    .bind(category, projectId)
     .run();
 }
 
@@ -425,4 +559,11 @@ export function setStateStmt(db: D1Database, key: string, value: string): D1Prep
 
 export async function setState(db: D1Database, key: string, value: string): Promise<void> {
   await setStateStmt(db, key, value).run();
+}
+
+/** 記録用の値をまとめて書く。往復を 1 回に抑えるためのもの。 */
+export async function setStates(db: D1Database, entries: Record<string, string>): Promise<void> {
+  const statements = Object.entries(entries).map(([k, v]) => setStateStmt(db, k, v));
+  if (statements.length === 0) return;
+  await db.batch(statements);
 }

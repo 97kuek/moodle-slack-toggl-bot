@@ -1,4 +1,4 @@
-import { toIso } from "../time";
+import { formatDateOnly, toIso } from "../time";
 import {
   TrackerAuthError,
   TrackerError,
@@ -6,6 +6,7 @@ import {
   type RunningEntry,
   type StartParams,
   type TimeTracker,
+  type TrackedRange,
 } from "./tracker";
 
 /**
@@ -21,12 +22,21 @@ import {
 
 const BASE = "https://focus.toggl.com/api";
 
+/** 実績の取得は 1 週間ぶん。200 × 5 ページあれば足りる。 */
+const PAGE_SIZE = 200;
+const MAX_PAGES = 5;
+
 interface FocusTimeEntry {
   id: string | number;
   description?: string | null;
   start: string;
   end?: string | null;
   project_id?: string | number | null;
+  /** ミリ秒。Track（秒）と単位が違う */
+  duration?: number | null;
+  /** "activity" が実作業。"break" は休憩なので集計から外す */
+  type?: string | null;
+  deleted_at?: string | null;
 }
 
 interface FocusProject {
@@ -143,6 +153,43 @@ export class TogglFocusClient implements TimeTracker {
   async getStoppedAt(entryId: string): Promise<number | null> {
     const e = await this.call<FocusTimeEntry>(`${await this.scope()}/time-entries/${entryId}`);
     return e?.end ? Math.floor(Date.parse(e.end) / 1000) : null;
+  }
+
+  /**
+   * 期間内の計測を取る。
+   *
+   *   GET {scope}/time-entries?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+   *
+   * duration は**ミリ秒**で返る（Track の v9 は秒）。ここで秒に直して、
+   * 呼び出し側が製品の違いを意識せずに済むようにする。
+   */
+  async listTracked(from: number, to: number): Promise<TrackedRange> {
+    const scope = await this.scope();
+    const query = `date_from=${formatDateOnly(from)}&date_to=${formatDateOnly(to)}&per_page=${PAGE_SIZE}`;
+
+    const raw: FocusTimeEntry[] = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const res = await this.call<{ data?: FocusTimeEntry[] } | FocusTimeEntry[]>(
+        `${scope}/time-entries?${query}&page=${page}`,
+      );
+      const items = Array.isArray(res) ? res : (res?.data ?? []);
+      raw.push(...items);
+      if (items.length < PAGE_SIZE) break;
+    }
+
+    const list = await this.call<{ data?: FocusProject[] } | FocusProject[]>(`${scope}/projects`);
+    const projects = Array.isArray(list) ? list : (list?.data ?? []);
+
+    return {
+      entries: raw
+        .filter((e) => e.type !== "break" && !e.deleted_at && (e.duration ?? 0) > 0)
+        .map((e) => ({
+          projectId: e.project_id === null || e.project_id === undefined ? null : String(e.project_id),
+          startedAt: Math.floor(Date.parse(e.start) / 1000),
+          sec: Math.round((e.duration ?? 0) / 1000),
+        })),
+      projectNames: new Map(projects.map((p) => [String(p.id), p.name])),
+    };
   }
 
   async findOrCreateProject(name: string): Promise<string | null> {

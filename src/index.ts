@@ -1,5 +1,5 @@
 import { SlackAPIClient } from "slack-cloudflare-workers";
-import type { Env } from "./config";
+import { CONFIG, type Env } from "./config";
 import * as repo from "./db/repo";
 import type { TaskRow } from "./db/types";
 import { MoodleAuthError, createMoodleClient } from "./moodle";
@@ -10,16 +10,25 @@ import {
   runNotifications,
 } from "./sync/notify";
 import { syncMoodle, syncSubmissions } from "./sync/reconcile";
-import { isTogglReady, loadSettings, missingSettings, type Settings } from "./settings";
+import {
+  isTogglReady,
+  loadSettings,
+  missingSettings,
+  moodleCategory,
+  type Settings,
+} from "./settings";
 import { createSlackApp } from "./slack/app";
 import { publishHome } from "./slack/home";
 import { reconcileRunningEntry } from "./toggl/tracking";
 import { nowSec, setTimezoneOffsetMin } from "./time";
 
-/** wrangler.toml の crons と 1 対 1 で対応させる。 */
+/**
+ * wrangler.toml の crons と 1 対 1 で対応させる。
+ * ここが食い違うと、想定外の cron がすべて runSync に流れて Moodle を叩き続ける。
+ */
 const CRON = {
   sync: "*/15 * * * *",
-  tracking: "*/5 * * * *",
+  tracking: "* * * * *",
 } as const;
 
 export default {
@@ -103,7 +112,7 @@ async function runSync(
   if (missingSettings(settings).length === 0) {
     try {
       const moodle = createMoodleClient(settings);
-      newTasks = (await syncMoodle(env.DB, moodle, now)).inserted;
+      newTasks = (await syncMoodle(env.DB, moodle, now, moodleCategory(settings))).inserted;
       await syncSubmissions(env.DB, moodle, now);
     } catch (e) {
       if (e instanceof MoodleAuthError) {
@@ -125,7 +134,15 @@ async function runSync(
   }
 }
 
-/** 5 分ごと: Toggl の計測状態を App Home に反映する。 */
+/**
+ * 毎分: 計測中なら App Home を描き直す。
+ *
+ * Slack のブロックは静的なので、経過時間は描画した瞬間のスナップショットにしかならない。
+ * 5 分ごとだと数字が止まって見えるため、計測中だけ毎分描き直す。
+ * 計測していないときは 1 クエリで抜けるので、止まっている間はほぼ何もしない。
+ *
+ * Toggl への問い合わせ（手動停止の検知）まで毎分やる必要はないので、そこだけ間隔を空ける。
+ */
 async function runTrackingSync(
   env: Env,
   settings: Settings,
@@ -134,7 +151,13 @@ async function runTrackingSync(
 ): Promise<void> {
   try {
     if (!(await repo.getRunningSession(env.DB))) return; // 計測していないなら描き直す理由がない
-    await reconcileRunningEntry(env, settings);
+
+    const lastCheck = await repo.getStateNumber(env.DB, "last_tracking_check_at");
+    if (lastCheck === null || now - lastCheck >= CONFIG.trackingCheckIntervalSec) {
+      await repo.setState(env.DB, "last_tracking_check_at", String(now));
+      await reconcileRunningEntry(env, settings);
+    }
+
     await publishHome(env, settings, client, now);
   } catch (e) {
     console.error("tracking sync failed", e);

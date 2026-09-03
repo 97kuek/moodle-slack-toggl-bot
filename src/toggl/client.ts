@@ -116,6 +116,20 @@ export class TogglClient {
   }
 
   /**
+   * 期間内の計測を取る。v9 は 1 回に 1000 件までで、1 週間ぶんなら十分収まる。
+   * 走っている計測は duration が負値で返るので、呼び出し側で落とす。
+   */
+  async listEntries(from: number, to: number): Promise<TogglTimeEntry[]> {
+    const q = `start_date=${encodeURIComponent(toIso(from))}&end_date=${encodeURIComponent(toIso(to))}`;
+    return (await this.call<TogglTimeEntry[]>(`/me/time_entries?${q}`)) ?? [];
+  }
+
+  async listProjects(): Promise<TogglProject[]> {
+    const wid = await this.getWorkspaceId();
+    return (await this.call<TogglProject[]>(`/workspaces/${wid}/projects`)) ?? [];
+  }
+
+  /**
    * 科目名でプロジェクトを探し、無ければ作る。
    * ユーザーに手動マッピングを求めないための処理（§8）。
    */

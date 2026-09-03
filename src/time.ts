@@ -66,6 +66,27 @@ export function localWeekday(epochSec: number): number {
   return new Date((epochSec + tzOffsetSec) * 1000).getUTCDay();
 }
 
+/** 表示タイムゾーンでの日付を表す通し番号。連続日数の計算に使う。 */
+export function localDayIndex(epochSec: number): number {
+  return Math.floor((epochSec + tzOffsetSec) / DAY);
+}
+
+/**
+ * 何日続いているか。
+ * 今日まだ 0 件でも、昨日まで続いていれば途切れていないものとして数える
+ *（朝いちばんに開いた瞬間に「0 日連続」に見えるのは、事実として誤り）。
+ */
+export function countStreak(days: number[], today: number): number {
+  const set = new Set(days);
+  let cursor = set.has(today) ? today : today - 1;
+  let n = 0;
+  while (set.has(cursor)) {
+    n++;
+    cursor--;
+  }
+  return n;
+}
+
 /** 表示タイムゾーンでの「今日」の 00:00（unix 秒）。 */
 export function startOfLocalDay(epochSec: number): number {
   return local(epochSec).startOfDay;
@@ -90,6 +111,12 @@ const pad = (n: number) => String(n).padStart(2, "0");
 export function formatClock(epochSec: number): string {
   const d = local(epochSec);
   return `${pad(d.hour)}:${pad(d.minute)}`;
+}
+
+/** "2026-09-03"。外部 API に日付だけを渡すときに使う。 */
+export function formatDateOnly(epochSec: number): string {
+  const d = local(epochSec);
+  return `${d.year}-${pad(d.month)}-${pad(d.day)}`;
 }
 
 /** "9/2 17:00"。今日なら "17:00" だけにする。 */

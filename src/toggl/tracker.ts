@@ -21,6 +21,19 @@ export interface StartParams {
   startedAt: number;
 }
 
+/** 計測 1 件ぶんの実績。集計に必要な最小限だけを持つ。 */
+export interface TrackedEntry {
+  projectId: string | null;
+  startedAt: number;
+  sec: number;
+}
+
+export interface TrackedRange {
+  entries: TrackedEntry[];
+  /** プロジェクト id → 名前 */
+  projectNames: Map<string, string>;
+}
+
 export interface TimeTracker {
   readonly kind: "track" | "focus";
   /** 設定が足りていない場合に、何が要るかを返す。空なら使える。 */
@@ -30,6 +43,15 @@ export interface TimeTracker {
   stop(entryId: string, at: number): Promise<void>;
   /** 科目・分類名からプロジェクトを引く。無ければ作る。対応しない場合は null。 */
   findOrCreateProject(name: string): Promise<string | null>;
+  /**
+   * 期間内の実績を計測サービス側から取る。
+   *
+   * こちらの `time_sessions` は Slack から始めたぶんしか持っていない。
+   * Toggl のアプリから直接始めた計測を週次サマリに含めるには、向こうに聞くしかない。
+   * 対応しない実装では未定義にしておき、呼び出し側はローカルの集計に戻る。
+   */
+  listTracked?(from: number, to: number): Promise<TrackedRange>;
+
   /**
    * 計測が実際に止められた時刻。
    * 計測側で手動停止された場合、検知した時刻で閉じると最大 5 分ぶん水増しになる。

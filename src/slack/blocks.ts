@@ -17,11 +17,16 @@ export const ACTION = {
   snooze: "task_snooze",
   undone: "task_undone",
   more: "task_more",
+  category: "task_category",
+  filter: "home_filter",
   sync: "sync_now",
   settingsConnection: "open_settings_connection",
   settingsNotification: "open_settings_notification",
   addTask: "open_add_task",
 } as const;
+
+/** 絞り込みの「すべて」。分類名と衝突しない値にしてある。 */
+export const FILTER_ALL = "__all__";
 
 /**
  * タスク 1 件を「見出し + 操作」の 2 ブロックで描く。
@@ -31,7 +36,10 @@ export const ACTION = {
  */
 export function taskBlocks(task: TaskRow, now: number, isRunning: boolean): AnyMessageBlock[] {
   const meta: string[] = [];
-  if (task.course_name) meta.push(escapeMrkdwn(task.course_name));
+  // Moodle 由来は分類がすべて同じ（例: Waseda）なので、出しても情報にならない。
+  // 科目名があるならそちらを見せ、無い（手で足した）タスクだけ分類を出す。
+  const label = task.course_name ?? task.category;
+  if (label) meta.push(escapeMrkdwn(label));
   if (task.due_at !== null) {
     meta.push(formatDue(task.due_at, now));
     meta.push(formatRemaining(task.due_at, now));
@@ -52,6 +60,10 @@ export function taskBlocks(task: TaskRow, now: number, isRunning: boolean): AnyM
     {
       text: { type: "plain_text", text: "明日まで通知しない", emoji: true },
       value: `snooze:${task.id}`,
+    },
+    {
+      text: { type: "plain_text", text: "分類を変える", emoji: true },
+      value: `category:${task.id}`,
     },
   ];
   if (task.url) {
@@ -118,8 +130,13 @@ export function homeView(params: {
   runningTitle: string | null;
   runningSince: number | null;
   todayTrackedSec: number;
+  todayCompleted: number;
+  streakDays: number;
+  categories: string[];
+  filter: string | null;
   lastSyncAt: number | null;
   warning: string | null;
+  notice: string | null;
 }): { type: "home"; blocks: AnyHomeTabBlock[] } {
   const { tasks, now, runningTaskId } = params;
   const blocks: AnyHomeTabBlock[] = [];
@@ -127,19 +144,41 @@ export function homeView(params: {
   // --- 上部: 今日の実績と計測中
   // Slack のブロックは静的なので、経過時間は描画時点のスナップショットになる。
   // 開始時刻を併記して、数字が止まって見えても意味が取れるようにする。
-  const runningLine =
-    params.runningTaskId && params.runningTitle && params.runningSince !== null
-      ? `*計測中* — ${escapeMrkdwn(params.runningTitle)}\n` +
-        `　${formatClock(params.runningSince)} 開始 · ${formatDuration(now - params.runningSince)} 経過`
-      : "計測していません";
+  const isRunning =
+    params.runningTaskId !== null && params.runningTitle !== null && params.runningSince !== null;
+  const runningLine = isRunning
+    ? `*計測中* — ${escapeMrkdwn(params.runningTitle!)}\n` +
+      `　${formatClock(params.runningSince!)} 開始 · ${formatDuration(now - params.runningSince!)} 経過`
+    : "計測していません";
 
+  // 数字は「出たら意味があるもの」だけ並べる。0 件・0 日を出しても手応えにならない。
+  const today = [`*今日の学習*　${formatDuration(params.todayTrackedSec)}`];
+  if (params.todayCompleted > 0) today.push(`完了 ${params.todayCompleted} 件`);
+  if (params.streakDays >= 2) today.push(`${params.streakDays} 日連続`);
+
+  // 停止はここにも置く。タスクが並ぶと、走っている行が画面の下に隠れてしまう。
   blocks.push({
     type: "section",
     text: {
       type: "mrkdwn",
-      text: `*今日の学習*　${formatDuration(params.todayTrackedSec)}\n${runningLine}`,
+      text: `${today.join("　·　")}\n${runningLine}`,
     },
+    ...(isRunning
+      ? {
+          accessory: {
+            type: "button" as const,
+            action_id: ACTION.stop,
+            text: { type: "plain_text" as const, text: "停止", emoji: true },
+            value: params.runningTaskId!,
+            style: "danger" as const,
+          },
+        }
+      : {}),
   });
+
+  if (params.notice) {
+    blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: params.notice }] });
+  }
 
   if (params.warning) {
     blocks.push({
@@ -188,10 +227,39 @@ export function homeView(params: {
 
   blocks.push({ type: "divider" });
 
+  // 分類での絞り込み。選んだものは D1 に残るので、cron が描き直しても保たれる。
+  if (params.categories.length > 1) {
+    const options = [
+      { text: { type: "plain_text" as const, text: "すべての分類", emoji: true }, value: FILTER_ALL },
+      ...params.categories.map((c) => ({
+        text: { type: "plain_text" as const, text: c, emoji: true },
+        value: c,
+      })),
+    ];
+    const selected = options.find((o) => o.value === params.filter) ?? options[0]!;
+    blocks.push({
+      type: "actions",
+      block_id: "home_filter_row",
+      elements: [
+        {
+          type: "static_select",
+          action_id: ACTION.filter,
+          options,
+          initial_option: selected,
+        },
+      ],
+    });
+  }
+
   if (tasks.length === 0) {
     blocks.push({
       type: "section",
-      text: { type: "mrkdwn", text: "やることはありません。" },
+      text: {
+        type: "mrkdwn",
+        text: params.filter
+          ? `「${escapeMrkdwn(params.filter)}」のタスクはありません。`
+          : "やることはありません。",
+      },
     });
   } else {
     const groups = new Map<string, TaskRow[]>();

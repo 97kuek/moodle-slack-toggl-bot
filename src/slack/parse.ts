@@ -55,7 +55,7 @@ export function parseDue(date: string | null, time: string | null): number | nul
 /** Slack から手で足したタスク。Moodle 同期の対象外になるよう source を分ける。 */
 export function manualTask(
   title: string,
-  course: string | null,
+  category: string | null,
   dueAt: number | null,
   now: number,
 ): TaskRow {
@@ -63,8 +63,9 @@ export function manualTask(
     id: repo.newId(),
     source: "manual",
     source_id: repo.newId(),
-    course_id: course,
-    course_name: course,
+    course_id: null,
+    course_name: null,
+    category,
     title,
     kind: "event",
     url: null,

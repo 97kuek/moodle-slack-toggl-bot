@@ -40,6 +40,11 @@ export const CONFIG = {
   maxSubmissionChecksPerSync: 8,
   /** 提出状況をチェックする間隔 */
   submissionCheckIntervalSec: 60 * 60,
+  /**
+   * 計測中の突き合わせで Toggl に問い合わせる間隔。
+   * App Home は毎分描き直すが、手動停止の検知まで毎分やる必要はない。
+   */
+  trackingCheckIntervalSec: 5 * 60,
 
   /** 締切から何秒後に自動アーカイブするか */
   archiveAfterDueSec: 24 * 60 * 60,
@@ -79,6 +84,20 @@ export const CONFIG = {
 
   /** App Home の「最近完了したもの」に出す件数（押し間違いの復旧用） */
   maxRecentlyCompletedOnHome: 5,
+
+  /**
+   * 分類の既定の選択肢。そのまま Toggl のプロジェクト名になる。
+   *
+   * **先頭が Moodle 由来のタスクの分類**。科目ごとにプロジェクトを作ると
+   * 履修数だけ増えて集計が読めなくなるので、大学の課題は 1 つにまとめる。
+   * 利用者はホームタブの「接続設定」から並びも中身も変えられる。
+   */
+  defaultCategories: ["Waseda", "バイト", "研究", "自習"],
+  /** 分類の選択肢の上限（Slack のラジオボタンが縦に伸びすぎない範囲） */
+  maxCategories: 8,
+
+  /** 連続日数をさかのぼって数える日数。ここより長い連続は頭打ちになる */
+  streakWindowDays: 120,
 } as const;
 
 export const SOURCE_BY_MODE = {

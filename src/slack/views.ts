@@ -13,6 +13,7 @@ export const CALLBACK = {
   connection: "settings_connection",
   notification: "settings_notification",
   addTask: "add_task",
+  category: "change_category",
 } as const;
 
 function text(
@@ -65,6 +66,37 @@ function select(
       type: "static_select",
       action_id: "value",
       options: opts,
+      ...(initialOption ? { initial_option: initialOption } : {}),
+    },
+  };
+}
+
+/**
+ * ラジオボタン。分類のように「決まった中から 1 つ選ぶ」ものに使う。
+ * 自由入力だと表記ゆれがそのまま Toggl のプロジェクト名になってしまう。
+ */
+function radio(
+  blockId: string,
+  label: string,
+  values: string[],
+  initial: string | null,
+  opts: { hint?: string; optional?: boolean } = {},
+): AnyModalBlock {
+  const options = values.map((v) => ({
+    text: { type: "plain_text" as const, text: v, emoji: true },
+    value: v,
+  }));
+  const initialOption = options.find((o) => o.value === initial);
+  return {
+    type: "input",
+    block_id: blockId,
+    optional: opts.optional ?? false,
+    label: { type: "plain_text", text: label, emoji: true },
+    ...(opts.hint ? { hint: { type: "plain_text" as const, text: opts.hint, emoji: true } } : {}),
+    element: {
+      type: "radio_buttons",
+      action_id: "value",
+      options,
       ...(initialOption ? { initial_option: initialOption } : {}),
     },
   };
@@ -128,6 +160,20 @@ export function connectionModal(s: Settings): ModalView {
       placeholder: "focus.toggl.com/12345678/workspaces/…",
       hint: "toggl_sk_ で始まるトークンのときだけ必要。URL をそのまま貼れば大丈夫です",
     }),
+
+    { type: "divider" },
+    header("分類"),
+    note(
+      "タスクを分ける単位で、そのまま Toggl のプロジェクトになります。\n" +
+        "*いちばん上が Moodle の課題の分類*です。科目ごとに分けるとプロジェクトが履修数だけ増えて、" +
+        "週次サマリが読めなくなるので、大学の課題はここにまとめます。",
+    ),
+    text("categories", "分類の選択肢", {
+      optional: true,
+      multiline: true,
+      initial: s.categories.join("\n"),
+      hint: "1 行に 1 つ。上から順に表示されます",
+    }),
   ];
 
   return {
@@ -190,7 +236,7 @@ export function notificationModal(s: Settings): ModalView {
   };
 }
 
-export function addTaskModal(): ModalView {
+export function addTaskModal(categories: string[]): ModalView {
   return {
     type: "modal",
     callback_id: CALLBACK.addTask,
@@ -199,10 +245,9 @@ export function addTaskModal(): ModalView {
     close: { type: "plain_text", text: "閉じる", emoji: true },
     blocks: [
       text("title", "やること", { placeholder: "レポートの下書き" }),
-      text("course", "分類", {
+      radio("category", "分類", categories, null, {
         optional: true,
-        placeholder: "バイト / 研究 / 自習 など",
-        hint: "Toggl のプロジェクト名になる",
+        hint: "Toggl のプロジェクト名になる。選択肢は「接続設定」から変えられる",
       }),
       {
         type: "input",
@@ -219,6 +264,33 @@ export function addTaskModal(): ModalView {
         hint: { type: "plain_text", text: "日付だけ指定した場合は 23:59 として扱う", emoji: true },
         element: { type: "timepicker", action_id: "value" },
       },
+    ],
+  };
+}
+
+/**
+ * 既にあるタスクの分類を変える。
+ * どのタスクかは private_metadata に入れて持ち回る（画面には出さない）。
+ */
+export function categoryModal(
+  taskId: string,
+  title: string,
+  categories: string[],
+  current: string | null,
+): ModalView {
+  return {
+    type: "modal",
+    callback_id: CALLBACK.category,
+    private_metadata: taskId,
+    title: { type: "plain_text", text: "分類を変える", emoji: true },
+    submit: { type: "plain_text", text: "保存", emoji: true },
+    close: { type: "plain_text", text: "閉じる", emoji: true },
+    blocks: [
+      note(`*${title}*`),
+      radio("category", "分類", categories, current, {
+        optional: true,
+        hint: "選ばずに保存すると分類なしになります",
+      }),
     ],
   };
 }

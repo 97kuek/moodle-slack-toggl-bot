@@ -18,6 +18,9 @@ export interface Settings {
   togglWorkspaceId: string | null;
   togglOrganizationId: string | null;
 
+  /** 分類の選択肢。先頭が Moodle 由来のタスクの分類になる */
+  categories: string[];
+
   // 通知
   timezoneOffsetMin: number;
   digestHour: number;
@@ -39,6 +42,7 @@ export const SETTING_KEYS = [
   "toggl_api_token",
   "toggl_workspace_id",
   "toggl_organization_id",
+  "categories",
   "timezone_offset_min",
   "digest_hour",
   "due_tomorrow_hour",
@@ -54,6 +58,24 @@ export type SettingKey = (typeof SETTING_KEYS)[number];
 
 /** この文字だけを入れて保存すると、その設定を消す。 */
 export const CLEAR_MARKER = "-";
+
+/**
+ * 分類の選択肢を読む。改行でも読点でも区切れるようにしてある。
+ * 空なら既定に戻す（選択肢が 0 個だと、タスクを追加する画面が壊れるため）。
+ */
+function parseCategories(raw: string | undefined): string[] {
+  const list = (raw ?? "")
+    .split(/[\n,、]/)
+    .map((v) => v.trim().slice(0, 40))
+    .filter((v) => v.length > 0);
+  const unique = [...new Set(list)].slice(0, CONFIG.maxCategories);
+  return unique.length > 0 ? unique : [...CONFIG.defaultCategories];
+}
+
+/** Moodle 由来のタスクがまとめて入る分類。選択肢の先頭と決めている。 */
+export function moodleCategory(s: Settings): string {
+  return s.categories[0] ?? CONFIG.defaultCategories[0]!;
+}
 
 export async function loadStoredSettings(db: D1Database): Promise<Map<string, string>> {
   const res = await db.prepare(`SELECT key, value FROM settings`).all<{ key: string; value: string }>();
@@ -86,10 +108,12 @@ export async function saveSettings(
     );
   }
   if (statements.length > 0) await db.batch(statements);
+  invalidateSettingsCache();
 }
 
 export async function deleteSetting(db: D1Database, key: SettingKey): Promise<void> {
   await db.prepare(`DELETE FROM settings WHERE key = ?1`).bind(key).run();
+  invalidateSettingsCache();
 }
 
 function str(
@@ -123,6 +147,7 @@ export function resolveSettings(env: Env, stored: Map<string, string>): Settings
     togglApiToken: str(stored, "toggl_api_token", env.TOGGL_API_TOKEN),
     togglWorkspaceId: str(stored, "toggl_workspace_id", env.TOGGL_WORKSPACE_ID),
     togglOrganizationId: str(stored, "toggl_organization_id", env.TOGGL_ORGANIZATION_ID),
+    categories: parseCategories(stored.get("categories")),
 
     timezoneOffsetMin: num(
       stored,
@@ -183,14 +208,28 @@ export async function seedSettingsFromEnv(
   return stored;
 }
 
+/**
+ * 直近に読んだ設定。
+ *
+ * ボタンを押すたびに D1 を往復すると、その分だけ画面が描き直るのが遅れる。
+ * 1 デプロイ 1 ユーザーで、設定を書き換えるのもこの Worker だけなので、
+ * 同じ isolate の中では短い間だけ使い回してよい。保存時は必ず捨てる。
+ */
+let cached: { at: number; settings: Settings } | null = null;
+const CACHE_TTL_SEC = 60;
+
+export function invalidateSettingsCache(): void {
+  cached = null;
+}
+
 export async function loadSettings(env: Env): Promise<Settings> {
-  const stored = await seedSettingsFromEnv(
-    env.DB,
-    env,
-    await loadStoredSettings(env.DB),
-    Math.floor(Date.now() / 1000),
-  );
-  return resolveSettings(env, stored);
+  const now = Math.floor(Date.now() / 1000);
+  if (cached && now - cached.at < CACHE_TTL_SEC) return cached.settings;
+
+  const stored = await seedSettingsFromEnv(env.DB, env, await loadStoredSettings(env.DB), now);
+  const settings = resolveSettings(env, stored);
+  cached = { at: now, settings };
+  return settings;
 }
 
 /** 動かすのに足りていないもの。Slack の設定画面と /health の両方で使う。 */

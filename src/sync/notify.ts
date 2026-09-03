@@ -4,6 +4,7 @@ import type { Settings } from "../settings";
 import * as repo from "../db/repo";
 import type { NotificationKind, TaskRow } from "../db/types";
 import { notificationBlocks } from "../slack/blocks";
+import { createTracker } from "../toggl";
 import {
   formatDue,
   formatDuration,
@@ -215,13 +216,24 @@ export async function maybeSendWeeklySummary(
     return false;
   }
 
-  const [byCourse, completed, active] = await Promise.all([
-    repo.trackedByCourse(db, weekStart, now),
+  const [byCategory, completed, active] = await Promise.all([
+    repo.trackedByCategory(db, weekStart, now),
     repo.completedBetween(db, weekStart, now),
     repo.listActiveTasks(db, CONFIG.maxTasksOnHome),
   ]);
 
-  const totalSec = byCourse.reduce((a, c) => a + (c.sec ?? 0), 0);
+  const localSec = byCategory.reduce((a, c) => a + (c.sec ?? 0), 0);
+
+  // 計測サービス側にも聞く。こちらの time_sessions は Slack から始めたぶんしか無いので、
+  // Toggl のアプリから直接始めた時間がまるごと抜け落ちている。
+  const external = await fetchWeekFromTracker(settings, weekStart, now);
+  const useExternal = external !== null && external.total >= localSec;
+
+  const totalSec = useExternal ? external.total : localSec;
+  const bars = useExternal
+    ? external.byLabel
+    : byCategory.map((c) => ({ label: c.category, sec: c.sec ?? 0 }));
+
   const nextWeek = active.filter(
     (t) => t.due_at !== null && t.due_at > now && localDayOffset(t.due_at, now) <= 7,
   );
@@ -234,15 +246,28 @@ export async function maybeSendWeeklySummary(
 
   const lines: string[] = [`*今週のふりかえり*　学習 \`${formatDuration(totalSec)}\``];
 
-  if (byCourse.length > 0) {
+  // 曜日ごとの推移。どの曜日に手が止まるかは、合計だけを見ても分からない。
+  if (useExternal && external.byDay.some((sec) => sec > 0)) {
     lines.push("");
-    const max = Math.max(...byCourse.map((c) => c.sec ?? 0));
-    for (const c of byCourse) {
-      const sec = c.sec ?? 0;
-      // 文字だけで割合が分かるように簡易バーを引く
-      const bar = "▇".repeat(Math.max(1, Math.round((sec / max) * 12)));
-      lines.push(`${bar} \`${formatDuration(sec)}\`　${c.course ?? "科目なし"}`);
+    const max = Math.max(...external.byDay);
+    for (let i = 0; i < 7; i++) {
+      const sec = external.byDay[i] ?? 0;
+      lines.push(`${WEEKDAY_LABELS[i]} ${bar(sec, max)}　\`${formatDuration(sec)}\``);
     }
+  }
+
+  if (bars.length > 0) {
+    lines.push("");
+    const max = Math.max(...bars.map((c) => c.sec));
+    for (const c of bars) {
+      lines.push(`${bar(c.sec, max)} \`${formatDuration(c.sec)}\`　${c.label ?? "分類なし"}`);
+    }
+  }
+
+  // Slack を通さずに測った時間があるなら、その差を出す。
+  // 合計だけ見て「こんなに測ったっけ」とならないように。
+  if (useExternal && totalSec - localSec > 5 * 60) {
+    lines.push("", `_うち Slack から始めたぶん ${formatDuration(localSec)}_`);
   }
 
   if (completed.length > 0) {
@@ -267,4 +292,60 @@ export async function maybeSendWeeklySummary(
 
   await repo.setState(db, "last_weekly_summary_at", String(now));
   return true;
+}
+
+
+const WEEKDAY_LABELS = ["月", "火", "水", "木", "金", "土", "日"] as const;
+
+/** 文字だけで割合が分かるように引く簡易バー。0 のときは空にする。 */
+function bar(sec: number, max: number): string {
+  if (sec <= 0 || max <= 0) return "";
+  return "▇".repeat(Math.max(1, Math.round((sec / max) * 12)));
+}
+
+interface WeekFromTracker {
+  total: number;
+  byLabel: { label: string | null; sec: number }[];
+  /** 月曜から日曜までの 7 日ぶん */
+  byDay: number[];
+}
+
+/**
+ * 計測サービスから今週の実績を取る。
+ *
+ * 取れない（Toggl 未設定・その製品が対応しない・API が失敗）場合は null を返し、
+ * 呼び出し側はローカルの集計に戻る。週次サマリはこれが無くても成立する。
+ */
+async function fetchWeekFromTracker(
+  settings: Settings,
+  weekStart: number,
+  now: number,
+): Promise<WeekFromTracker | null> {
+  const tracker = createTracker(settings);
+  if (!tracker || tracker.missing().length > 0 || !tracker.listTracked) return null;
+
+  try {
+    const range = await tracker.listTracked(weekStart, now);
+    const byLabel = new Map<string | null, number>();
+    const byDay = new Array<number>(7).fill(0);
+
+    for (const e of range.entries) {
+      // 日付単位でしか絞れない API があるので、窓の外に出たものはここで落とす
+      if (e.startedAt < weekStart || e.startedAt >= now) continue;
+      const label = e.projectId ? (range.projectNames.get(e.projectId) ?? null) : null;
+      byLabel.set(label, (byLabel.get(label) ?? 0) + e.sec);
+      const day = Math.floor((e.startedAt - weekStart) / 86400);
+      if (day >= 0 && day < 7) byDay[day] = (byDay[day] ?? 0) + e.sec;
+    }
+
+    return {
+      total: [...byLabel.values()].reduce((a, b) => a + b, 0),
+      byLabel: [...byLabel].map(([label, sec]) => ({ label, sec })).sort((a, b) => b.sec - a.sec),
+      byDay,
+    };
+  } catch (e) {
+    // サマリを落とすほどのことではない。ローカルの集計で送る。
+    console.error("weekly tracker fetch failed", e);
+    return null;
+  }
 }

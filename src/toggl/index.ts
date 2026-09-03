@@ -6,6 +6,7 @@ import {
   type RunningEntry,
   type StartParams,
   type TimeTracker,
+  type TrackedRange,
 } from "./tracker";
 
 /** Toggl Track（v9）を共通インターフェースに合わせる薄いアダプタ。 */
@@ -53,6 +54,24 @@ class TogglTrackAdapter implements TimeTracker {
   async getStoppedAt(entryId: string): Promise<number | null> {
     const e = await this.client.getEntry(Number(entryId));
     return e?.stop ? Math.floor(Date.parse(e.stop) / 1000) : null;
+  }
+
+  async listTracked(from: number, to: number): Promise<TrackedRange> {
+    const [entries, projects] = await Promise.all([
+      this.client.listEntries(from, to),
+      this.client.listProjects(),
+    ]);
+    return {
+      // duration が負値のものは計測中。まだ確定していないので集計から外す。
+      entries: entries
+        .filter((e) => e.duration > 0)
+        .map((e) => ({
+          projectId: e.project_id === null ? null : String(e.project_id),
+          startedAt: Math.floor(Date.parse(e.start) / 1000),
+          sec: e.duration,
+        })),
+      projectNames: new Map(projects.map((p) => [String(p.id), p.name])),
+    };
   }
 }
 

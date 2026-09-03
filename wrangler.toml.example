@@ -28,7 +28,7 @@ SLACK_TARGET_CHANNEL = ""
 [triggers]
 crons = [
   "*/15 * * * *",  # 同期 + リマインド + ダイジェスト + 週次サマリ
-  "*/5 * * * *"    # Toggl の計測中 entry を App Home に反映
+  "* * * * *"      # 計測中だけ App Home を描き直す（経過時間を進める）
 ]
 
 [observability]
